@@ -261,32 +261,30 @@ function autoScore(lead){
   return Math.min(100,s);
 }
 
-function fetchCSVText(sheetId){
-  var csvUrl="https://docs.google.com/spreadsheets/d/"+sheetId+"/export?format=csv&gid=0";
-  var gvizUrl="https://docs.google.com/spreadsheets/d/"+sheetId+"/gviz/tq?tqx=out:csv";
-  var attempts=[
-    function(){return fetch("https://corsproxy.io/?"+encodeURIComponent(csvUrl)).then(function(r){if(!r.ok)throw new Error(r.status);return r.text();});},
-    function(){return fetch("https://corsproxy.io/?"+encodeURIComponent(gvizUrl)).then(function(r){if(!r.ok)throw new Error(r.status);return r.text();});},
-    function(){return fetch("https://api.allorigins.win/raw?url="+encodeURIComponent(csvUrl)).then(function(r){if(!r.ok)throw new Error(r.status);return r.text();});},
-    function(){return fetch("https://api.allorigins.win/get?url="+encodeURIComponent(gvizUrl)).then(function(r){return r.json();}).then(function(d){var t=d.contents||"";if(t.startsWith("data:")){t=atob(t.split(",")[1]);}if(!t)throw new Error("leer");return t;});}
-  ];
-  function tryNext(i){
-    if(i>=attempts.length)return Promise.reject(new Error("Alle Proxy-Server nicht erreichbar. Bitte später erneut versuchen."));
-    return attempts[i]().catch(function(e){console.warn("Proxy "+i+" failed:",e.message);return tryNext(i+1);});
-  }
-  return tryNext(0);
+function fetchViaGvizJSON(sheetId){
+  return new Promise(function(resolve,reject){
+    var cb='__gviz'+Date.now()+Math.floor(Math.random()*9999);
+    var timer=setTimeout(function(){cleanup();reject(new Error('Timeout (10s)'));},10000);
+    function cleanup(){clearTimeout(timer);delete window[cb];var s=document.getElementById(cb);if(s&&s.parentNode)s.parentNode.removeChild(s);}
+    window[cb]=function(resp){
+      cleanup();
+      if(!resp||resp.status!=='ok'){reject(new Error(resp&&resp.errors?resp.errors[0].message:'Ungueltige Antwort'));return;}
+      var cols=(resp.table.cols||[]).map(function(c){return(c.label||c.id||'').trim();});
+      var rows=(resp.table.rows||[]).map(function(r){return(r.c||[]).map(function(cell){return cell&&cell.v!=null?String(cell.v):'';});});
+      resolve({cols:cols,rows:rows});
+    };
+    var s=document.createElement('script');s.id=cb;
+    s.src='https://docs.google.com/spreadsheets/d/'+sheetId+'/gviz/tq?tqx=out:json&callback='+cb;
+    s.onerror=function(){cleanup();reject(new Error('Script-Fehler (Sheet nicht oeffentlich?)'));};
+    document.head.appendChild(s);
+  });
 }
 
 function fetchSheetLeads(sheetId){
-  return fetchCSVText(sheetId).then(function(text){
-    if(!text)throw new Error("Keine Daten empfangen");
-    var lines=text.trim().split("\n");
-    if(lines.length<2)throw new Error("Tabelle ist leer");
+  return fetchViaGvizJSON(sheetId).then(function(data){
+    var headers=data.cols.map(function(h){return h.toLowerCase();});
+    var rawHeaders=data.cols;
 
-    var rawHeaders=parseCSVLine(lines[0]);
-    var headers=rawHeaders.map(function(h){return h.replace(/^"|"$/g,"").trim().toLowerCase();});
-
-    // Flexible column finder — returns index of first matching header
     function col(){
       var names=Array.prototype.slice.call(arguments);
       for(var n=0;n<names.length;n++){
@@ -295,127 +293,77 @@ function fetchSheetLeads(sheetId){
       }
       return -1;
     }
-    function get(row,i){return i>=0&&i<row.length?(row[i]||"").replace(/^"|"$/g,"").trim():"";}
+    function get(row,i){return i>=0&&i<row.length?(row[i]||'').trim():'';}
 
-    // Detect format: "new" format has IMVo ID / Stadt / Typ columns
-    var isNewFormat = col("imvo id","imvo")>=0 || (col("stadt")>=0 && col("typ")>=0);
-
+    var isNewFormat=col('imvo id','imvo')>=0||(col('stadt')>=0&&col('typ')>=0);
     var colIdx={};
     if(isNewFormat){
-      colIdx.inseratNr = col("imvo id","imvo");
-      colIdx.ort       = col("stadt");
-      colIdx.stadtteil = col("stadtteil");
-      colIdx.objekttyp = col("typ");
-      colIdx.zimmer    = col("zimmer");
-      colIdx.wohnflaeche = col("wohnfl.");
-      colIdx.grundstueck = col("grundfl.");
-      colIdx.baujahr   = col("baujahr");
-      colIdx.preis     = col("preis");
-      colIdx.quelle    = col("quelle");
-      colIdx.publikation = col("datum","publikationsdatum");
-      colIdx.anbieter  = col("anbieter");
-      colIdx.fon       = col("telefon","fon");
-      colIdx.notizen   = col("gesprächsnotizen","gesprachsnotizen","notizen");
-      colIdx.score     = col("score","lead score");
-    } else {
-      colIdx.strasse   = col("straße","strasse");
-      colIdx.hausnummer= col("hausnummer");
-      colIdx.plz       = col("postleitzahl","plz");
-      colIdx.ort       = col("ort","stadt");
-      colIdx.objekttyp = col("objekttyp","typ");
-      colIdx.grundstueck=col("grundstücksfläche","grundstuecksfläche","grundfl.");
-      colIdx.wohnflaeche=col("wohnfläche","wohnfl.");
-      colIdx.baujahr   = col("baujahr");
-      colIdx.preis     = col("preis");
-      colIdx.inseratLink=col("inseratslink");
-      colIdx.inseratNr = col("inserat-nr.","inserat nr","inseratnr");
-      colIdx.publikation=col("publikationsdatum","datum");
-      colIdx.vorname   = col("vorname");
-      colIdx.nachname  = col("nachname");
-      colIdx.mail      = col("mail","e-mail","email");
-      colIdx.fon       = col("fon","telefon");
-      colIdx.quelle    = col("quelle");
-      colIdx.score     = col("score","lead score");
-      colIdx.notizen   = col("notizen","gesprächsnotizen");
+      colIdx.inseratNr  =col('imvo id','imvo');
+      colIdx.ort        =col('stadt');
+      colIdx.stadtteil  =col('stadtteil');
+      colIdx.objekttyp  =col('typ');
+      colIdx.zimmer     =col('zimmer');
+      colIdx.wohnflaeche=col('wohnfl.');
+      colIdx.grundstueck=col('grundfl.');
+      colIdx.baujahr    =col('baujahr');
+      colIdx.preis      =col('preis');
+      colIdx.quelle     =col('quelle');
+      colIdx.publikation=col('datum','publikationsdatum');
+      colIdx.anbieter   =col('anbieter');
+      colIdx.fon        =col('telefon','fon');
+      colIdx.notizen    =col('gespr','notizen');
+      colIdx.score      =col('score','lead score');
+    }else{
+      colIdx.strasse    =col('stra\u00dfe','strasse');
+      colIdx.hausnummer =col('hausnummer');
+      colIdx.plz        =col('postleitzahl','plz');
+      colIdx.ort        =col('ort','stadt');
+      colIdx.objekttyp  =col('objekttyp','typ');
+      colIdx.grundstueck=col('grundst\u00fccksfläche','grundfl.');
+      colIdx.wohnflaeche=col('wohnfl\u00e4che','wohnfl.');
+      colIdx.baujahr    =col('baujahr');
+      colIdx.preis      =col('preis');
+      colIdx.inseratLink=col('inseratslink');
+      colIdx.inseratNr  =col('inserat-nr.','inseratnr');
+      colIdx.publikation=col('publikationsdatum','datum');
+      colIdx.vorname    =col('vorname');
+      colIdx.nachname   =col('nachname');
+      colIdx.mail       =col('mail','e-mail','email');
+      colIdx.fon        =col('fon','telefon');
+      colIdx.quelle     =col('quelle');
+      colIdx.score      =col('score','lead score');
+      colIdx.notizen    =col('notizen','gespr');
     }
 
     var leads=[];
-    for(var i=1;i<lines.length;i++){
-      if(!lines[i].trim())continue;
-      var row=parseCSVLine(lines[i]);
-
+    for(var i=0;i<data.rows.length;i++){
+      var row=data.rows[i];
       if(isNewFormat){
         var imvoId=get(row,colIdx.inseratNr);
         var stadt=get(row,colIdx.ort);
         var telefon=get(row,colIdx.fon);
         if(!imvoId&&!stadt&&!telefon)continue;
-
         var rawTyp=get(row,colIdx.objekttyp);
         var rawQuelle=get(row,colIdx.quelle);
-        var rawPreis=get(row,colIdx.preis).replace(/[.,]/g,function(c,i,s){
-          // German number: 170000 or 170.000 or 1.700,00 — keep only digits
-          return"";
-        });
-        // Actually just strip non-digits for preis
-        var preisClean=get(row,colIdx.preis).replace(/[^\d]/g,"");
+        var preisClean=get(row,colIdx.preis).replace(/[^\d]/g,'');
         var anbieter=get(row,colIdx.anbieter);
         var notizen=get(row,colIdx.notizen);
         var stadtteil=get(row,colIdx.stadtteil);
         var zimmer=get(row,colIdx.zimmer);
         var extraInfo=[];
-        if(anbieter)extraInfo.push("Anbieter: "+anbieter);
-        if(stadtteil&&stadtteil!==stadt)extraInfo.push("Stadtteil: "+stadtteil);
-        if(zimmer)extraInfo.push("Zimmer: "+zimmer);
-        var fullNotizen=[notizen].concat(extraInfo).filter(Boolean).join(" | ");
-
-        var rawScore=parseInt(get(row,colIdx.score)||"0",10);
-        var lead={
-          id:Date.now()+Math.random()+i,
-          columnId:"lead",
-          strasse:"",hausnummer:"",
-          plz:"",
-          ort:stadt||"Offenbach",
-          objekttyp:mapObjekttyp(rawTyp),
-          grundstueck:get(row,colIdx.grundstueck),
-          wohnflaeche:get(row,colIdx.wohnflaeche),
-          baujahr:get(row,colIdx.baujahr),
-          preis:preisClean,
-          inseratLink:"",
-          inseratNr:imvoId,
-          publikation:get(row,colIdx.publikation),
-          prioritaet:"warm",
-          wiedervorlage:"",
-          vorname:"",nachname:"",mail:"",
-          fon:telefon,
-          quelle:mapQuelle(rawQuelle),
-          score:isNaN(rawScore)||rawScore===0?0:Math.min(100,Math.max(0,rawScore)),
-          notizen:fullNotizen,
-          aktivitaeten:[],
-          erstelltAm:todayDE(),_importedAt:todayISO()
-        };
+        if(anbieter)extraInfo.push('Anbieter: '+anbieter);
+        if(stadtteil&&stadtteil!==stadt)extraInfo.push('Stadtteil: '+stadtteil);
+        if(zimmer)extraInfo.push('Zimmer: '+zimmer);
+        var fullNotizen=[notizen].concat(extraInfo).filter(Boolean).join(' | ');
+        var rawScore=parseInt(get(row,colIdx.score)||'0',10);
+        var lead={id:Date.now()+Math.random()+i,columnId:'lead',strasse:'',hausnummer:'',plz:'',ort:stadt||'Offenbach',objekttyp:mapObjekttyp(rawTyp),grundstueck:get(row,colIdx.grundstueck),wohnflaeche:get(row,colIdx.wohnflaeche),baujahr:get(row,colIdx.baujahr),preis:preisClean,inseratLink:'',inseratNr:imvoId,publikation:get(row,colIdx.publikation),prioritaet:'warm',wiedervorlage:'',vorname:'',nachname:'',mail:'',fon:telefon,quelle:mapQuelle(rawQuelle),score:isNaN(rawScore)||rawScore===0?0:Math.min(100,Math.max(0,rawScore)),notizen:fullNotizen,aktivitaeten:[],erstelltAm:todayDE(),_importedAt:todayISO()};
         if(!lead.score)lead.score=autoScore(lead);
         leads.push(lead);
-      } else {
+      }else{
         var strasse=get(row,colIdx.strasse),vorname=get(row,colIdx.vorname);
         if(!strasse&&!vorname)continue;
-        var rawScore2=parseInt(get(row,colIdx.score)||"0",10);
-        var lead2={
-          id:Date.now()+Math.random()+i,columnId:"lead",
-          strasse:strasse,hausnummer:get(row,colIdx.hausnummer),
-          plz:get(row,colIdx.plz),ort:get(row,colIdx.ort)||"Offenbach",
-          objekttyp:mapObjekttyp(get(row,colIdx.objekttyp))||"Einfamilienhaus",
-          grundstueck:get(row,colIdx.grundstueck),wohnflaeche:get(row,colIdx.wohnflaeche),
-          baujahr:get(row,colIdx.baujahr),preis:get(row,colIdx.preis),
-          inseratLink:get(row,colIdx.inseratLink),inseratNr:get(row,colIdx.inseratNr),
-          publikation:get(row,colIdx.publikation),prioritaet:"warm",wiedervorlage:"",
-          vorname:vorname,nachname:get(row,colIdx.nachname),
-          mail:get(row,colIdx.mail),fon:get(row,colIdx.fon),
-          quelle:mapQuelle(get(row,colIdx.quelle))||"Sonstige",
-          score:isNaN(rawScore2)?0:Math.min(100,Math.max(0,rawScore2)),
-          notizen:get(row,colIdx.notizen),aktivitaeten:[],
-          erstelltAm:todayDE(),_importedAt:todayISO()
-        };
-        leads.push(lead2);
+        var rawScore2=parseInt(get(row,colIdx.score)||'0',10);
+        leads.push({id:Date.now()+Math.random()+i,columnId:'lead',strasse:strasse,hausnummer:get(row,colIdx.hausnummer),plz:get(row,colIdx.plz),ort:get(row,colIdx.ort)||'Offenbach',objekttyp:mapObjekttyp(get(row,colIdx.objekttyp))||'Einfamilienhaus',grundstueck:get(row,colIdx.grundstueck),wohnflaeche:get(row,colIdx.wohnflaeche),baujahr:get(row,colIdx.baujahr),preis:get(row,colIdx.preis),inseratLink:get(row,colIdx.inseratLink),inseratNr:get(row,colIdx.inseratNr),publikation:get(row,colIdx.publikation),prioritaet:'warm',wiedervorlage:'',vorname:vorname,nachname:get(row,colIdx.nachname),mail:get(row,colIdx.mail),fon:get(row,colIdx.fon),quelle:mapQuelle(get(row,colIdx.quelle))||'Sonstige',score:isNaN(rawScore2)?0:Math.min(100,Math.max(0,rawScore2)),notizen:get(row,colIdx.notizen),aktivitaeten:[],erstelltAm:todayDE(),_importedAt:todayISO()});
       }
     }
     return leads;
