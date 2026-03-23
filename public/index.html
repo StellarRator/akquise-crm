@@ -261,14 +261,25 @@ function autoScore(lead){
   return Math.min(100,s);
 }
 
+function fetchCSVText(sheetId){
+  var csvUrl="https://docs.google.com/spreadsheets/d/"+sheetId+"/export?format=csv&gid=0";
+  var gvizUrl="https://docs.google.com/spreadsheets/d/"+sheetId+"/gviz/tq?tqx=out:csv";
+  var attempts=[
+    function(){return fetch("https://corsproxy.io/?"+encodeURIComponent(csvUrl)).then(function(r){if(!r.ok)throw new Error(r.status);return r.text();});},
+    function(){return fetch("https://corsproxy.io/?"+encodeURIComponent(gvizUrl)).then(function(r){if(!r.ok)throw new Error(r.status);return r.text();});},
+    function(){return fetch("https://api.allorigins.win/raw?url="+encodeURIComponent(csvUrl)).then(function(r){if(!r.ok)throw new Error(r.status);return r.text();});},
+    function(){return fetch("https://api.allorigins.win/get?url="+encodeURIComponent(gvizUrl)).then(function(r){return r.json();}).then(function(d){var t=d.contents||"";if(t.startsWith("data:")){t=atob(t.split(",")[1]);}if(!t)throw new Error("leer");return t;});}
+  ];
+  function tryNext(i){
+    if(i>=attempts.length)return Promise.reject(new Error("Alle Proxy-Server nicht erreichbar. Bitte später erneut versuchen."));
+    return attempts[i]().catch(function(e){console.warn("Proxy "+i+" failed:",e.message);return tryNext(i+1);});
+  }
+  return tryNext(0);
+}
+
 function fetchSheetLeads(sheetId){
-  // No &sheet=Leads — always use first sheet
-  var url="https://docs.google.com/spreadsheets/d/"+sheetId+"/gviz/tq?tqx=out:csv";
-  var proxy="https://api.allorigins.win/get?url="+encodeURIComponent(url);
-  return fetch(proxy).then(function(r){return r.json();}).then(function(data){
-    var text=data.contents;
+  return fetchCSVText(sheetId).then(function(text){
     if(!text)throw new Error("Keine Daten empfangen");
-    if(text.startsWith("data:")){var b64=text.split(",")[1];text=atob(b64);}
     var lines=text.trim().split("\n");
     if(lines.length<2)throw new Error("Tabelle ist leer");
 
