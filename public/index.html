@@ -89,7 +89,9 @@ function extractSheetId(input){
 }
 function isDuplicate(existing,lead){
   return existing.some(function(l){
-    return(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.hausnummer===lead.hausnummer&&l.plz===lead.plz)||(l.inseratNr&&lead.inseratNr&&l.inseratNr===lead.inseratNr);
+    if(l.inseratNr&&lead.inseratNr&&l.inseratNr===lead.inseratNr)return true;
+    if(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.hausnummer===lead.hausnummer&&l.plz===lead.plz)return true;
+    return false;
   });
 }
 
@@ -199,24 +201,211 @@ function exportCSV(){
 }
 
 // ===================== SHEETS IMPORT =====================
+
+// Typ-Kürzel → Objekttyp
+var TYP_MAP = {
+  "ETW":"Eigentumswohnung","EFH":"Einfamilienhaus","MFH":"Mehrfamilienhaus",
+  "DHH":"Doppelhaushälfte","RH":"Reihenmittelhaus","REH":"Reihenmittelhaus",
+  "MAIS":"Eigentumswohnung","MAISONNETTE":"Eigentumswohnung",
+  "PENTH":"Eigentumswohnung","PENTHOUSE":"Eigentumswohnung",
+  "VIL":"Villa","VIL/BUN":"Villa","VILLA":"Villa",
+  "BUN":"Bungalow","BUNGALOW":"Bungalow",
+  "GRD-EFH":"Grundstück","GRD":"Grundstück","GEWGR":"Grundstück",
+  "STADTHAUS":"Stadthaus","LANDHAUS":"Landhaus","REIHENHAUS":"Reihenmittelhaus"
+};
+
+function mapObjekttyp(raw){
+  if(!raw)return"Einfamilienhaus";
+  var u=raw.trim().toUpperCase();
+  if(TYP_MAP[u])return TYP_MAP[u];
+  // Try partial match
+  var keys=Object.keys(TYP_MAP);
+  for(var i=0;i<keys.length;i++){if(u.indexOf(keys[i])>=0)return TYP_MAP[keys[i]];}
+  // Check against full names
+  var full=["Einfamilienhaus","Mehrfamilienhaus","Reihenmittelhaus","Bungalow","Doppelhaushälfte","Villa","Landhaus","Stadthaus","Eigentumswohnung","Grundstück"];
+  for(var j=0;j<full.length;j++){if(full[j].toLowerCase().indexOf(raw.trim().toLowerCase())>=0||raw.trim().toLowerCase().indexOf(full[j].toLowerCase())>=0)return full[j];}
+  return"Einfamilienhaus";
+}
+
+function mapQuelle(raw){
+  if(!raw)return"Sonstige";
+  var l=raw.toLowerCase();
+  if(l.indexOf("immoscout")>=0)return"Immoscout24";
+  if(l.indexOf("immowelt")>=0)return"Immowelt";
+  if(l.indexOf("immonet")>=0)return"Immonet";
+  if(l.indexOf("ebay")>=0||l.indexOf("kleinanzeige")>=0)return"eBay Kleinanzeigen";
+  if(l.indexOf("empfehlung")>=0||l.indexOf("referral")>=0)return"Empfehlung";
+  if(l.indexOf("eigentümer")>=0||l.indexOf("eigentumer")>=0)return"Eigentümer direkt";
+  return"Sonstige";
+}
+
+function parseCSVLine(line){
+  var row=[],cur="",inQ=false;
+  for(var i=0;i<line.length;i++){
+    var ch=line[i];
+    if(ch==='"'){if(inQ&&line[i+1]==='"'){cur+='"';i++;}else inQ=!inQ;}
+    else if(ch===','&&!inQ){row.push(cur.trim());cur="";}
+    else cur+=ch;
+  }
+  row.push(cur.trim());
+  return row;
+}
+
+function autoScore(lead){
+  var s=20;
+  if(lead.fon)s+=25;
+  if(lead.preis)s+=15;
+  if(lead.wohnflaeche)s+=10;
+  if(lead.baujahr)s+=10;
+  if(lead.notizen&&lead.notizen.length>5)s+=20;
+  return Math.min(100,s);
+}
+
 function fetchSheetLeads(sheetId){
-  var url="https://docs.google.com/spreadsheets/d/"+sheetId+"/gviz/tq?tqx=out:csv&sheet=Leads";
+  // No &sheet=Leads — always use first sheet
+  var url="https://docs.google.com/spreadsheets/d/"+sheetId+"/gviz/tq?tqx=out:csv";
   var proxy="https://api.allorigins.win/get?url="+encodeURIComponent(url);
   return fetch(proxy).then(function(r){return r.json();}).then(function(data){
     var text=data.contents;
-    if(text&&text.startsWith("data:")){var b64=text.split(",")[1];text=decodeURIComponent(escape(atob(b64)));}
+    if(!text)throw new Error("Keine Daten empfangen");
+    if(text.startsWith("data:")){var b64=text.split(",")[1];text=atob(b64);}
     var lines=text.trim().split("\n");
-    var headers=lines[0].split(",").map(function(h){return h.replace(/^"|"$/g,"").trim();});
-    var exactCol=function(k){return headers.findIndex(function(h){return h===k;});};
-    var getExact=function(row,k){var i=exactCol(k);return i>=0?(row[i]||"").trim():"";};
+    if(lines.length<2)throw new Error("Tabelle ist leer");
+
+    var rawHeaders=parseCSVLine(lines[0]);
+    var headers=rawHeaders.map(function(h){return h.replace(/^"|"$/g,"").trim().toLowerCase();});
+
+    // Flexible column finder — returns index of first matching header
+    function col(){
+      var names=Array.prototype.slice.call(arguments);
+      for(var n=0;n<names.length;n++){
+        var idx=headers.findIndex(function(h){return h===names[n]||h.indexOf(names[n])>=0;});
+        if(idx>=0)return idx;
+      }
+      return -1;
+    }
+    function get(row,i){return i>=0&&i<row.length?(row[i]||"").replace(/^"|"$/g,"").trim():"";}
+
+    // Detect format: "new" format has IMVo ID / Stadt / Typ columns
+    var isNewFormat = col("imvo id","imvo")>=0 || (col("stadt")>=0 && col("typ")>=0);
+
+    var colIdx={};
+    if(isNewFormat){
+      colIdx.inseratNr = col("imvo id","imvo");
+      colIdx.ort       = col("stadt");
+      colIdx.stadtteil = col("stadtteil");
+      colIdx.objekttyp = col("typ");
+      colIdx.zimmer    = col("zimmer");
+      colIdx.wohnflaeche = col("wohnfl.");
+      colIdx.grundstueck = col("grundfl.");
+      colIdx.baujahr   = col("baujahr");
+      colIdx.preis     = col("preis");
+      colIdx.quelle    = col("quelle");
+      colIdx.publikation = col("datum","publikationsdatum");
+      colIdx.anbieter  = col("anbieter");
+      colIdx.fon       = col("telefon","fon");
+      colIdx.notizen   = col("gesprächsnotizen","gesprachsnotizen","notizen");
+      colIdx.score     = col("score","lead score");
+    } else {
+      colIdx.strasse   = col("straße","strasse");
+      colIdx.hausnummer= col("hausnummer");
+      colIdx.plz       = col("postleitzahl","plz");
+      colIdx.ort       = col("ort","stadt");
+      colIdx.objekttyp = col("objekttyp","typ");
+      colIdx.grundstueck=col("grundstücksfläche","grundstuecksfläche","grundfl.");
+      colIdx.wohnflaeche=col("wohnfläche","wohnfl.");
+      colIdx.baujahr   = col("baujahr");
+      colIdx.preis     = col("preis");
+      colIdx.inseratLink=col("inseratslink");
+      colIdx.inseratNr = col("inserat-nr.","inserat nr","inseratnr");
+      colIdx.publikation=col("publikationsdatum","datum");
+      colIdx.vorname   = col("vorname");
+      colIdx.nachname  = col("nachname");
+      colIdx.mail      = col("mail","e-mail","email");
+      colIdx.fon       = col("fon","telefon");
+      colIdx.quelle    = col("quelle");
+      colIdx.score     = col("score","lead score");
+      colIdx.notizen   = col("notizen","gesprächsnotizen");
+    }
+
     var leads=[];
     for(var i=1;i<lines.length;i++){
-      var row=[];var cur="",inQ=false;
-      for(var ci=0;ci<lines[i].length;ci++){var ch=lines[i][ci];if(ch==='"')inQ=!inQ;else if(ch===','&&!inQ){row.push(cur);cur="";}else cur+=ch;}
-      row.push(cur);
-      if(!getExact(row,"Straße")&&!getExact(row,"Vorname"))continue;
-      var rawScore=parseInt(getExact(row,"Score")||"0",10);
-      leads.push({id:Date.now()+Math.random()+i,columnId:"lead",strasse:getExact(row,"Straße"),hausnummer:getExact(row,"Hausnummer"),plz:getExact(row,"Postleitzahl"),ort:getExact(row,"Ort")||"Offenbach",objekttyp:getExact(row,"Objekttyp")||"Einfamilienhaus",grundstueck:getExact(row,"Grundstücksfläche"),wohnflaeche:getExact(row,"Wohnfläche"),baujahr:getExact(row,"Baujahr"),preis:getExact(row,"Preis"),inseratLink:getExact(row,"Inseratslink"),inseratNr:getExact(row,"Inserat-Nr."),publikation:getExact(row,"Publikationsdatum"),prioritaet:"warm",wiedervorlage:"",vorname:getExact(row,"Vorname"),nachname:getExact(row,"Nachname"),mail:getExact(row,"Mail"),fon:getExact(row,"Fon"),quelle:getExact(row,"Quelle")||"Sonstige",score:isNaN(rawScore)?0:Math.min(100,Math.max(0,rawScore)),notizen:"",aktivitaeten:[],erstelltAm:todayDE(),_importedAt:todayISO()});
+      if(!lines[i].trim())continue;
+      var row=parseCSVLine(lines[i]);
+
+      if(isNewFormat){
+        var imvoId=get(row,colIdx.inseratNr);
+        var stadt=get(row,colIdx.ort);
+        var telefon=get(row,colIdx.fon);
+        if(!imvoId&&!stadt&&!telefon)continue;
+
+        var rawTyp=get(row,colIdx.objekttyp);
+        var rawQuelle=get(row,colIdx.quelle);
+        var rawPreis=get(row,colIdx.preis).replace(/[.,]/g,function(c,i,s){
+          // German number: 170000 or 170.000 or 1.700,00 — keep only digits
+          return"";
+        });
+        // Actually just strip non-digits for preis
+        var preisClean=get(row,colIdx.preis).replace(/[^\d]/g,"");
+        var anbieter=get(row,colIdx.anbieter);
+        var notizen=get(row,colIdx.notizen);
+        var stadtteil=get(row,colIdx.stadtteil);
+        var zimmer=get(row,colIdx.zimmer);
+        var extraInfo=[];
+        if(anbieter)extraInfo.push("Anbieter: "+anbieter);
+        if(stadtteil&&stadtteil!==stadt)extraInfo.push("Stadtteil: "+stadtteil);
+        if(zimmer)extraInfo.push("Zimmer: "+zimmer);
+        var fullNotizen=[notizen].concat(extraInfo).filter(Boolean).join(" | ");
+
+        var rawScore=parseInt(get(row,colIdx.score)||"0",10);
+        var lead={
+          id:Date.now()+Math.random()+i,
+          columnId:"lead",
+          strasse:"",hausnummer:"",
+          plz:"",
+          ort:stadt||"Offenbach",
+          objekttyp:mapObjekttyp(rawTyp),
+          grundstueck:get(row,colIdx.grundstueck),
+          wohnflaeche:get(row,colIdx.wohnflaeche),
+          baujahr:get(row,colIdx.baujahr),
+          preis:preisClean,
+          inseratLink:"",
+          inseratNr:imvoId,
+          publikation:get(row,colIdx.publikation),
+          prioritaet:"warm",
+          wiedervorlage:"",
+          vorname:"",nachname:"",mail:"",
+          fon:telefon,
+          quelle:mapQuelle(rawQuelle),
+          score:isNaN(rawScore)||rawScore===0?0:Math.min(100,Math.max(0,rawScore)),
+          notizen:fullNotizen,
+          aktivitaeten:[],
+          erstelltAm:todayDE(),_importedAt:todayISO()
+        };
+        if(!lead.score)lead.score=autoScore(lead);
+        leads.push(lead);
+      } else {
+        var strasse=get(row,colIdx.strasse),vorname=get(row,colIdx.vorname);
+        if(!strasse&&!vorname)continue;
+        var rawScore2=parseInt(get(row,colIdx.score)||"0",10);
+        var lead2={
+          id:Date.now()+Math.random()+i,columnId:"lead",
+          strasse:strasse,hausnummer:get(row,colIdx.hausnummer),
+          plz:get(row,colIdx.plz),ort:get(row,colIdx.ort)||"Offenbach",
+          objekttyp:mapObjekttyp(get(row,colIdx.objekttyp))||"Einfamilienhaus",
+          grundstueck:get(row,colIdx.grundstueck),wohnflaeche:get(row,colIdx.wohnflaeche),
+          baujahr:get(row,colIdx.baujahr),preis:get(row,colIdx.preis),
+          inseratLink:get(row,colIdx.inseratLink),inseratNr:get(row,colIdx.inseratNr),
+          publikation:get(row,colIdx.publikation),prioritaet:"warm",wiedervorlage:"",
+          vorname:vorname,nachname:get(row,colIdx.nachname),
+          mail:get(row,colIdx.mail),fon:get(row,colIdx.fon),
+          quelle:mapQuelle(get(row,colIdx.quelle))||"Sonstige",
+          score:isNaN(rawScore2)?0:Math.min(100,Math.max(0,rawScore2)),
+          notizen:get(row,colIdx.notizen),aktivitaeten:[],
+          erstelltAm:todayDE(),_importedAt:todayISO()
+        };
+        leads.push(lead2);
+      }
     }
     return leads;
   });
@@ -563,7 +752,7 @@ function renderImportModal(){
   else if(S.importStatus.startsWith("error:"))body='<div style="background:#FFF5F5;border:1px solid #FCA5A5;border-radius:9px;padding:14px;margin-bottom:14px"><p style="color:#EF4444;font-size:13px;margin:0">Fehler: '+esc(S.importStatus.replace("error:",""))+'</p><p style="color:#94A3B8;font-size:11px;margin:6px 0 0">Stelle sicher, dass die Tabelle öffentlich geteilt ist.</p></div>';
   else if(S.importStatus==="ready")body='<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:9px;padding:10px 14px;margin-bottom:14px"><p style="color:#15803D;font-size:13px;font-weight:600;margin:0">'+S.importFetched.length+' neue Leads · '+S.importDupes.length+' Duplikate</p></div>'+
     (S.importDupes.length?'<p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 7px">Duplikate – trotzdem importieren?</p>'+S.importDupes.map(function(d){var key=d.inseratNr||d.strasse;return'<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#FFFBEB;border-radius:7px;margin-bottom:3px"><span style="font-size:11px;color:#1a1f35">'+esc(d.strasse)+' '+esc(d.hausnummer)+', '+esc(d.plz)+'</span><select data-dupe-key="'+esc(key)+'" style="font-size:11px;border:1px solid #E2E8F0;border-radius:6px;padding:3px 6px"><option value="skip">Überspringen</option><option value="import" '+(S.importDupeDecisions[key]==="import"?"selected":"")+'>Importieren</option></select></div>';}).join(""):"")+'<div style="margin-bottom:14px;padding:10px 13px;background:#F8FAFC;border-radius:9px"><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Auto-Import Intervall</p><select id="import-interval-sel" style="padding:6px 10px;border-radius:8px;border:1px solid #E2E8F0;font-size:12px"><option value="0" '+(S.importInterval==0?"selected":"")+'>Kein Auto-Import</option><option value="15" '+(S.importInterval==15?"selected":"")+'>Alle 15 Minuten</option><option value="30" '+(S.importInterval==30?"selected":"")+'>Alle 30 Minuten</option><option value="60" '+(S.importInterval==60?"selected":"")+'>Stündlich</option><option value="360" '+(S.importInterval==360?"selected":"")+'>Alle 6 Stunden</option></select></div><div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-import" class="btn-primary">'+(S.importFetched.length+Object.values(S.importDupeDecisions).filter(function(v){return v==="import";}).length)+' Leads importieren</button></div>';
-  return'<div class="modal-overlay" id="import-modal"><div class="modal-box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><h2 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35">Google Sheets Import</h2><button data-action="close-import" style="width:28px;height:28px;border-radius:8px;border:none;background:#F4F1EC;cursor:pointer;font-size:16px">×</button></div><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Google Sheets URL oder Sheet-ID</p><div style="display:flex;gap:7px;margin-bottom:6px"><input id="sheet-input" value="'+esc(S.importSheetInput)+'" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid '+(S.importSheetError?"#FCA5A5":"#E2E8F0")+';font-size:12px;outline:none"><button data-action="fetch-sheet" style="padding:8px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#6B7FD4,#A855F7);color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Laden</button></div>'+(S.importSheetError?'<p style="color:#EF4444;font-size:11px;margin:0 0 8px">'+esc(S.importSheetError)+'</p>':'')+'<p style="font-size:10px;color:#94A3B8;margin:0 0 14px">Tabelle muss öffentlich geteilt sein · Spalten: Straße, Hausnummer, Postleitzahl, Ort, Objekttyp, Preis, Vorname, Nachname, Fon, Mail, Quelle, Score, Inseratslink</p>'+body+'</div></div>';
+  return'<div class="modal-overlay" id="import-modal"><div class="modal-box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><h2 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35">Google Sheets Import</h2><button data-action="close-import" style="width:28px;height:28px;border-radius:8px;border:none;background:#F4F1EC;cursor:pointer;font-size:16px">×</button></div><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Google Sheets URL oder Sheet-ID</p><div style="display:flex;gap:7px;margin-bottom:6px"><input id="sheet-input" value="'+esc(S.importSheetInput)+'" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid '+(S.importSheetError?"#FCA5A5":"#E2E8F0")+';font-size:12px;outline:none"><button data-action="fetch-sheet" style="padding:8px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#6B7FD4,#A855F7);color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Laden</button></div>'+(S.importSheetError?'<p style="color:#EF4444;font-size:11px;margin:0 0 8px">'+esc(S.importSheetError)+'</p>':'')+'<p style="font-size:10px;color:#94A3B8;margin:0 0 14px">Tabelle muss öffentlich geteilt sein (Betrachter). Format wird automatisch erkannt: IMVo ID, Stadt, Typ (ETW/EFH/MFH/DHH...), Wohnfl., Preis, Quelle, Telefon, Gesprächsnotizen</p>'+body+'</div></div>';
 }
 
 // ===================== RENDER LOGIN =====================
