@@ -1,5 +1,3 @@
 {
-  "buildCommand": "echo built",
-  "outputDirectory": "public",
-  "installCommand": ""
+  "cleanUrls": true
 }
