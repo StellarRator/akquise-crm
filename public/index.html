@@ -128,7 +128,9 @@ var S = {
   filters: {prioritaet:"all",quelle:"all",objekttyp:"all",search:""},
   filterAufgaben: false,
   autoImportTimer: null,
-  map: {visible:true,minimized:false,x:0,y:110,w:500,h:390}
+  map: {visible:true,minimized:false,x:0,y:110,w:500,h:390},
+  searchQuery: "",
+  scrollToLeadId: null
 };
 
 // Init from localStorage
@@ -683,6 +685,48 @@ function miniBar(value,max,color,label,count){
   return'<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="font-size:10px;color:#1a1f35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px">'+esc(label)+'</span><span style="font-size:10px;font-weight:700;color:'+color+';margin-left:4px">'+count+'</span></div><div style="height:5px;background:#F0EDE8;border-radius:20px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+color+';border-radius:20px;transition:width 0.4s"></div></div></div>';
 }
 
+// ===================== GLOBAL SEARCH =====================
+function searchLeads(q){
+  if(!q||q.length<2)return[];
+  var t=q.toLowerCase().replace(/[\s\-]/g,"");
+  return S.leads.filter(function(l){
+    var fon=(l.fon||"").replace(/[\s\-]/g,"");
+    return(l.strasse&&l.strasse.toLowerCase().indexOf(q.toLowerCase())>=0)||
+      (l.ort&&l.ort.toLowerCase().indexOf(q.toLowerCase())>=0)||
+      (l.plz&&l.plz.indexOf(q)>=0)||
+      (l.inseratNr&&l.inseratNr.toLowerCase().indexOf(q.toLowerCase())>=0)||
+      (fon&&fon.indexOf(t)>=0)||
+      (l.vorname&&l.vorname.toLowerCase().indexOf(q.toLowerCase())>=0)||
+      (l.nachname&&l.nachname.toLowerCase().indexOf(q.toLowerCase())>=0)||
+      (l.mail&&l.mail.toLowerCase().indexOf(q.toLowerCase())>=0)||
+      (l.notizen&&l.notizen.toLowerCase().indexOf(q.toLowerCase())>=0);
+  }).slice(0,8);
+}
+
+function renderSearchDrop(){
+  var res=searchLeads(S.searchQuery);
+  if(!res.length)return'<div style="position:absolute;top:calc(100% + 5px);left:0;width:360px;background:#fff;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,0.13);border:1px solid #E2E8F0;z-index:3000;padding:12px 14px;text-align:center"><p style="font-size:12px;color:#94A3B8;margin:0">Keine Treffer für „'+esc(S.searchQuery)+'‟</p></div>';
+  return'<div style="position:absolute;top:calc(100% + 5px);left:0;width:380px;background:#fff;border-radius:11px;box-shadow:0 8px 28px rgba(0,0,0,0.13);border:1px solid #E2E8F0;z-index:3000;overflow:hidden">'+
+    res.map(function(l){
+      var col=COLUMNS.find(function(c){return c.id===l.columnId;})||{label:"?",color:"#94A3B8"};
+      var title=l.strasse?(l.strasse+(l.hausnummer?" "+l.hausnummer:"")):(l.inseratNr?"Nr. "+l.inseratNr:"Lead");
+      var sub=[(l.plz||""),(l.ort||""),(l.objekttyp||"")].filter(Boolean).join(" · ");
+      return'<div data-action="search-pick" data-lead-id="'+l.id+'" style="display:flex;align-items:center;gap:9px;padding:9px 13px;cursor:pointer;border-bottom:1px solid #F4F1EC" onmouseover="this.style.background=\'#F8FAFC\'" onmouseout="this.style.background=\'\'">'+
+        '<div style="flex:1;min-width:0">'+
+          '<p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(title)+'</p>'+
+          (sub?'<p style="font-size:10px;color:#94A3B8;margin:0">'+esc(sub)+'</p>':'')+
+          (l.fon?'<p style="font-size:10px;color:#64748B;margin:0">📞 '+esc(l.fon)+'</p>':'')+
+          (l.inseratNr&&l.strasse?'<p style="font-size:10px;color:#64748B;margin:0">Nr. '+esc(l.inseratNr)+'</p>':'')+
+        '</div>'+
+        '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0">'+
+          '<span style="font-size:9px;padding:1px 6px;border-radius:10px;background:'+col.color+'18;color:'+col.color+';font-weight:700;white-space:nowrap">'+esc(col.label.split(" ").slice(0,2).join(" "))+'</span>'+
+          scoreBadge(l.score||0)+
+        '</div>'+
+      '</div>';
+    }).join('')+
+  '</div>';
+}
+
 // ===================== RENDER TOP BAND =====================
 function renderTopBand(){
   var today=todayDE(),isoNow=todayISO();
@@ -879,6 +923,14 @@ function renderMain(){
     '<div style="padding:9px 16px;background:#fff;border-bottom:1px solid #E8E4DD;display:flex;align-items:center;gap:9px;flex-shrink:0">'+
       '<h1 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35;margin:0">'+(S.activeView==="kanban"?"Akquise-Pipeline":"Statistik &amp; Übersicht")+'</h1>'+
       '<button data-action="open-import" title="Google Sheets Import" style="width:28px;height:28px;border-radius:7px;border:1px solid #E2E8F0;background:#fff;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center">📥</button>'+
+      '<div style="position:relative;flex-shrink:0">'+
+        '<div style="display:flex;align-items:center;gap:6px;padding:5px 10px 5px 10px;border-radius:20px;border:1px solid '+(S.searchQuery?"#6B7FD4":"#E2E8F0")+';background:'+(S.searchQuery?"#EEF2FF":"#F8FAFC")+';width:270px;transition:all 0.15s">'+
+          '<span style="font-size:12px;color:#94A3B8;flex-shrink:0">🔍</span>'+
+          '<input id="global-search" value="'+esc(S.searchQuery)+'" placeholder="Adresse, Inserat-Nr., Telefon …" style="border:none;background:transparent;outline:none;font-size:12px;color:#1a1f35;flex:1;min-width:0">'+
+          (S.searchQuery?'<button data-action="search-clear" style="border:none;background:transparent;cursor:pointer;font-size:14px;color:#94A3B8;padding:0;line-height:1;flex-shrink:0">×</button>':"")+
+        '</div>'+
+        (S.searchQuery.length>=2?renderSearchDrop():"")+
+      '</div>'+
       '<div style="flex:1"></div>'+
       (S.exportMsg?'<span style="font-size:11px;color:#3AA86C;font-weight:600">'+esc(S.exportMsg)+'</span>':"")+
       '<div style="display:flex;gap:3px;flex-wrap:wrap">'+colChips+'</div>'+
@@ -911,6 +963,16 @@ function render(){
   });
   if(S.auth)syncMapWindow();
   attachInputListeners();
+  if(S.scrollToLeadId){
+    var targetCard=document.querySelector('[data-lead-id="'+S.scrollToLeadId+'"]');
+    if(targetCard){
+      targetCard.scrollIntoView({behavior:"smooth",block:"center"});
+      targetCard.style.transition="box-shadow 0.3s";
+      targetCard.style.boxShadow="0 0 0 3px #6B7FD4, 0 8px 24px rgba(107,127,212,0.4)";
+      setTimeout(function(){if(targetCard)targetCard.style.boxShadow="";},2000);
+    }
+    S.scrollToLeadId=null;
+  }
 }
 
 // ===================== INPUT LISTENERS (re-attached per render) =====================
@@ -928,6 +990,25 @@ function attachInputListeners(){
   if(fq)fq.addEventListener("change",function(e){S.filters.quelle=e.target.value;render();});
   var ft=document.getElementById("filter-typ");
   if(ft)ft.addEventListener("change",function(e){S.filters.objekttyp=e.target.value;render();});
+
+  // Global search
+  var gs=document.getElementById("global-search");
+  if(gs){
+    gs.addEventListener("input",function(e){
+      S.searchQuery=e.target.value;
+      var pos=e.target.selectionStart;
+      render();
+      var ng=document.getElementById("global-search");
+      if(ng){ng.focus();try{ng.setSelectionRange(pos,pos);}catch(x){}}
+    });
+    gs.addEventListener("keydown",function(e){
+      if(e.key==="Escape"){S.searchQuery="";render();}
+    });
+    gs.addEventListener("blur",function(){
+      // delay so click on result can fire first
+      setTimeout(function(){S.searchQuery="";render();},180);
+    });
+  }
 
   // Sheet input
   var si=document.getElementById("sheet-input");
@@ -1044,6 +1125,22 @@ document.addEventListener("click",function(e){
 
   if(action==="login"){doLogin();return;}
   if(action==="logout"){S.auth=false;render();return;}
+  if(action==="search-clear"){S.searchQuery="";render();return;}
+  if(action==="search-pick"){
+    var pickId=el.dataset.leadId||el.closest("[data-lead-id]")&&el.closest("[data-lead-id]").dataset.leadId;
+    var picked=S.leads.find(function(l){return String(l.id)===String(pickId);});
+    if(picked){
+      S.searchQuery="";
+      S.activeView="kanban";
+      S.filters={prioritaet:"all",quelle:"all",objekttyp:"all",search:""};
+      S.filterAufgaben=false;
+      S.expandedCard=picked.id;
+      S.editingLead=JSON.parse(JSON.stringify(picked));
+      S.scrollToLeadId=picked.id;
+      render();
+    }
+    return;
+  }
   if(action==="view:kanban"){S.activeView="kanban";render();return;}
   if(action==="view:stats"){S.activeView="stats";render();return;}
   if(action==="toggle-map"){S.map.visible=!S.map.visible;saveMapWin();render();syncMapWindow();return;}
