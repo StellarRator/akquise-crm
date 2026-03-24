@@ -142,7 +142,8 @@ var S = {
   searchQuery: "",
   scrollToLeadId: null,
   showDelete: false,
-  deleteSelected: {}
+  deleteSelected: {},
+  colDropOpen: null
 };
 
 // Init from localStorage
@@ -504,7 +505,8 @@ function buildInitialManualMap(data){
     nachname:   fi('nachname','name','last name','surname'),
     mail:       fi('e-mail','email','mail','@'),
     fon:        fi('telefon','mobil','fon','tel.','tel ','phone','handy'),
-    notizen:    fi('notiz','gespr\u00e4ch','kommentar','bemerkung','anmerkung','memo','hinweis')
+    notizen:    fi('notiz','gespr\u00e4ch','kommentar','bemerkung','anmerkung','memo','hinweis'),
+    status:     fi('status','verf\u00fcgbarkeit','aktiv','online/offline')
   };
 }
 
@@ -534,7 +536,9 @@ function mapLeadsFromManualMap(data, mm){
     if(stadtteil&&stadtteil!==ort)extra.push('Stadtteil: '+stadtteil);
     if(zimmer)extra.push('Zimmer: '+zimmer);
     var fullNotizen=[notizen].concat(extra).filter(Boolean).join(' | ');
-    var lead={id:Date.now()+Math.random()+i,columnId:'lead',
+    var statusRaw=g(row,mm.status).toLowerCase().trim();
+    var targetCol=(statusRaw==='offline'||statusRaw==='inaktiv'||statusRaw==='nicht verf\u00fcgbar')?'verworfen':'lead';
+    var lead={id:Date.now()+Math.random()+i,columnId:targetCol,
       strasse:strasse,hausnummer:g(row,mm.hausnummer),plz:g(row,mm.plz),ort:ort,
       objekttyp:mapObjekttyp(rawTyp)||'Eigentumswohnung',
       grundstueck:g(row,mm.grundstueck),wohnflaeche:g(row,mm.wohnflaeche),
@@ -894,12 +898,39 @@ function renderLeadCard(lead,col){
 }
 
 // ===================== RENDER KANBAN =====================
+function renderColDrop(col, colLeads){
+  var isOpen=S.colDropOpen===col.id;
+  if(!isOpen)return'';
+  var items=colLeads.length
+    ?colLeads.map(function(l){
+        var title=l.strasse?(l.strasse+(l.hausnummer?' '+l.hausnummer:'')):(l.inseratNr?'Nr. '+l.inseratNr:l.ort||'Lead');
+        var sub=[(l.ort||''),(l.objekttyp||''),(l.preis?formatPrice(l.preis):'')].filter(Boolean).join(' · ');
+        return'<div data-action="col-drop-pick" data-lead-id="'+l.id+'" style="padding:7px 12px;cursor:pointer;border-bottom:1px solid #F4F1EC" onmouseover="this.style.background=\'#F8FAFC\'" onmouseout="this.style.background=\'\'">'+
+          '<p style="font-size:11px;font-weight:600;color:#1a1f35;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(title)+'</p>'+
+          (sub?'<p style="font-size:10px;color:#94A3B8;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(sub)+'</p>':'')+
+        '</div>';
+      }).join('')
+    :'<p style="font-size:11px;color:#94A3B8;text-align:center;padding:10px 0;margin:0">Keine Leads</p>';
+  return'<div class="col-drop-menu" style="position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:600;background:#fff;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,0.14);border:1px solid #E2E8F0;max-height:280px;overflow-y:auto">'+ items+'</div>';
+}
+
 function renderKanban(){
   var filtered=getFilteredLeads();
   var cols=COLUMNS.map(function(col){
     var colLeads=filtered.filter(function(l){return l.columnId===col.id;}).sort(function(a,b){return(b.score||0)-(a.score||0);});
     var isOver=S.dragOverCol===col.id;
-    return'<div data-col-id="'+col.id+'" style="width:210px;flex-shrink:0;display:flex;flex-direction:column;background:'+(isOver?col.color+"15":"rgba(0,0,0,0.04)")+';border-radius:13px;border:'+(isOver?"2px dashed "+col.color:"2px solid transparent")+';transition:all 0.2s;overflow:hidden"><div style="padding:9px 11px 7px;border-bottom:2px solid '+col.color+'40;flex-shrink:0"><div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:10px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px">'+esc(col.label)+'</span><span style="font-size:10px;font-weight:700;background:'+col.color+';color:#fff;border-radius:20px;padding:1px 6px">'+colLeads.length+'</span></div></div><div style="flex:1;overflow-y:auto;padding:7px">'+colLeads.map(function(lead){return renderLeadCard(lead,col);}).join("")+'</div></div>';
+    var isDropOpen=S.colDropOpen===col.id;
+    var header='<div style="position:relative;padding:9px 11px 7px;border-bottom:2px solid '+col.color+'40;flex-shrink:0">'+
+      '<div style="display:flex;align-items:center;justify-content:space-between">'+
+        '<span style="font-size:10px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(col.label)+'</span>'+
+        '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">'+
+          (colLeads.length?'<button data-action="toggle-col-drop" data-col-id="'+col.id+'" title="Lead direkt auswählen" style="width:20px;height:20px;border-radius:5px;border:none;background:'+(isDropOpen?col.color:'rgba(0,0,0,0.06)')+';color:'+(isDropOpen?'#fff':col.color)+';cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center">☰</button>':'')+
+          '<span style="font-size:10px;font-weight:700;background:'+col.color+';color:#fff;border-radius:20px;padding:1px 6px">'+colLeads.length+'</span>'+
+        '</div>'+
+      '</div>'+
+      renderColDrop(col, colLeads)+
+    '</div>';
+    return'<div data-col-id="'+col.id+'" style="width:210px;flex-shrink:0;display:flex;flex-direction:column;background:'+(isOver?col.color+"15":"rgba(0,0,0,0.04)")+';border-radius:13px;border:'+(isOver?"2px dashed "+col.color:"2px solid transparent")+';transition:all 0.2s;overflow:visible">'+header+'<div style="flex:1;overflow-y:auto;padding:7px">'+colLeads.map(function(lead){return renderLeadCard(lead,col);}).join("")+'</div></div>';
   }).join("");
   return'<div style="flex:1;overflow-x:auto;overflow-y:hidden;padding:8px 10px 10px"><div style="display:flex;gap:9px;height:100%;min-width:'+(COLUMNS.length*210)+'px">'+cols+'</div></div>';
 }
@@ -1036,6 +1067,7 @@ function renderImportModal(){
         colDrop('mail','E-Mail',false)+
         colDrop('fon','Telefon',false)+
         colDrop('notizen','Notizen / Kommentar',false)+
+        colDrop('status','Status (online/offline → Spalte)',false)+
       '</tbody>'+
     '</table></div>'+
     '<div style="display:flex;gap:10px;justify-content:flex-end">'+
@@ -1382,6 +1414,11 @@ function doLogin(){
 
 document.addEventListener("click",function(e){
   // Close modal overlay
+  // Close column dropdown when clicking outside
+  if(S.colDropOpen){
+    var inDrop=e.target.closest(".col-drop-menu")||e.target.closest('[data-action="toggle-col-drop"]')||e.target.closest('[data-action="col-drop-pick"]');
+    if(!inDrop){S.colDropOpen=null;render();return;}
+  }
   if(e.target.classList&&e.target.classList.contains("modal-overlay")){
     S.showImport=false;S.showAdd=false;S.showDelete=false;render();return;
   }
@@ -1391,6 +1428,17 @@ document.addEventListener("click",function(e){
 
   if(action==="login"){doLogin();return;}
   if(action==="logout"){S.auth=false;render();return;}
+  if(action==="toggle-col-drop"){
+    var cid=btn.dataset.colId;
+    S.colDropOpen=S.colDropOpen===cid?null:cid;
+    render();return;
+  }
+  if(action==="col-drop-pick"){
+    var lid=btn.dataset.leadId||(btn.closest("[data-lead-id]")&&btn.closest("[data-lead-id]").dataset.leadId);
+    var pl=S.leads.find(function(l){return String(l.id)===String(lid);});
+    if(pl){S.colDropOpen=null;S.expandedCard=pl.id;S.editingLead=JSON.parse(JSON.stringify(pl));S.scrollToLeadId=pl.id;render();}
+    return;
+  }
   if(action==="open-delete"){S.showDelete=true;S.deleteSelected={};render();return;}
   if(action==="close-delete"){S.showDelete=false;S.deleteSelected={};render();return;}
   if(action==="confirm-delete"){
