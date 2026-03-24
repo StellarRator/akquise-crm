@@ -541,8 +541,36 @@ function buildInitialManualMap(data){
     mail:       fi('e-mail','email','mail','@'),
     fon:        fi('telefon','mobil','fon','tel.','tel ','phone','handy'),
     notizen:    fi('notiz','gespr\u00e4ch','kommentar','bemerkung','anmerkung','memo','hinweis'),
-    status:     fi('status','verf\u00fcgbarkeit','aktiv','online/offline')
+    status:     fi('status','verf\u00fcgbarkeit','aktiv','online/offline'),
+    kategorie:  fi('kategorie','category','kanban','pipeline','stufe','phase','stage','spalte','column')
   };
+}
+
+// Map a raw "Kategorie" cell value to a COLUMNS id (case-insensitive, fuzzy)
+function mapKategorieToColumn(raw){
+  if(!raw)return null;
+  var r=raw.toLowerCase().replace(/[\s_\-]/g,'');
+  var pairs=[
+    {id:'lead',         keys:['lead','leadeingegangen','neu','new','eingang']},
+    {id:'erstkontakt',  keys:['erstkontakt','erstkontak','firstcontact','kontakt','kontaktiert']},
+    {id:'nicht_erreicht',keys:['nichterreicht','nicherreicht','unerreicht','noreply','noanswer','keinekontakt']},
+    {id:'wiedervorlage_tasks',keys:['wiedervorlage','wiederlage','task','tasks','followup','follow','wiederv']},
+    {id:'termin',       keys:['termin','terminvorort','appointment','besichtigungstermin','vorort']},
+    {id:'besichtigung', keys:['besichtigung','besich','viewing','begehung']},
+    {id:'praesentation',keys:['praesentation','präsentation','presentation','praesentationstermin','präsentationstermin']},
+    {id:'auftrag',      keys:['auftrag','auftraggeber','mandate','mandat','listed']},
+    {id:'vermarktung',  keys:['vermarktung','vermarktungsstart','marketing','vermarkt']},
+    {id:'verworfen',    keys:['verworfen','offline','inaktiv','rejected','abgelehnt','veraltet']},
+    {id:'archiv',       keys:['archiv','verloren','archiviert','lost','closed','abgeschlossen']}
+  ];
+  for(var i=0;i<pairs.length;i++){
+    var p=pairs[i];
+    for(var k=0;k<p.keys.length;k++){
+      var kw=p.keys[k];
+      if(r===kw||r.indexOf(kw)>=0||kw.indexOf(r)>=0)return p.id;
+    }
+  }
+  return null;
 }
 
 // Map leads using explicit column-index assignments
@@ -572,7 +600,15 @@ function mapLeadsFromManualMap(data, mm){
     if(zimmer)extra.push('Zimmer: '+zimmer);
     var fullNotizen=[notizen].concat(extra).filter(Boolean).join(' | ');
     var statusRaw=g(row,mm.status).toLowerCase().trim();
-    var targetCol=(statusRaw==='offline'||statusRaw==='inaktiv'||statusRaw==='nicht verf\u00fcgbar')?'verworfen':'lead';
+    var kategorieRaw=g(row,mm.kategorie);
+    // Status "offline" always wins → verworfen; otherwise use Kategorie column; fallback: lead
+    var targetCol='lead';
+    if(statusRaw==='offline'||statusRaw==='inaktiv'||statusRaw==='nicht verf\u00fcgbar'){
+      targetCol='verworfen';
+    }else{
+      var kCol=mapKategorieToColumn(kategorieRaw);
+      if(kCol)targetCol=kCol;
+    }
     var lead={id:Date.now()+Math.random()+i,columnId:targetCol,
       strasse:strasse,hausnummer:g(row,mm.hausnummer),plz:g(row,mm.plz),ort:ort,
       objekttyp:mapObjekttyp(rawTyp)||'Eigentumswohnung',
@@ -1228,6 +1264,7 @@ function renderImportModal(){
         colDrop('fon','Telefon',false)+
         colDrop('notizen','Notizen / Kommentar',false)+
         colDrop('status','Status (online/offline → Spalte)',false)+
+        colDrop('kategorie','Kategorie (→ Kanban-Spalte beim Import)',false)+
       '</tbody>'+
     '</table></div>'+
     '<div style="display:flex;gap:10px;justify-content:flex-end">'+
