@@ -644,12 +644,29 @@ function initMapInContainer(container){
 }
 
 function geocodeLead(lead){
-  var addr=lead.strasse+" "+lead.hausnummer+", "+lead.plz+" "+lead.ort+", Deutschland";
-  if(geoCache[addr])return Promise.resolve(geoCache[addr]);
+  // Build best possible address from available data
+  var parts=[];
+  if(lead.strasse)parts.push(lead.strasse+(lead.hausnummer?" "+lead.hausnummer:""));
+  if(lead.plz)parts.push(lead.plz);
+  if(lead.ort)parts.push(lead.ort);
+  parts.push("Deutschland");
+  var addr=parts.join(", ");
+  // Add tiny random jitter so city-only leads don't all stack on the same pixel
+  var hasExact=!!(lead.strasse&&(lead.plz||lead.ort));
+  if(geoCache[addr]){
+    var c=geoCache[addr];
+    if(!hasExact){c={lat:c.lat+(Math.random()-0.5)*0.008,lng:c.lng+(Math.random()-0.5)*0.008};}
+    return Promise.resolve(c);
+  }
   return new Promise(function(res){
     new window.google.maps.Geocoder().geocode({address:addr},function(results,status){
-      if(status==="OK"&&results[0]){var l=results[0].geometry.location;var c={lat:l.lat(),lng:l.lng()};geoCache[addr]=c;res(c);}
-      else res(null);
+      if(status==="OK"&&results[0]){
+        var l=results[0].geometry.location;
+        var c={lat:l.lat(),lng:l.lng()};
+        geoCache[addr]=c; // cache base coords
+        if(!hasExact){c={lat:c.lat+(Math.random()-0.5)*0.008,lng:c.lng+(Math.random()-0.5)*0.008};}
+        res(c);
+      }else res(null);
     });
   });
 }
@@ -664,18 +681,21 @@ function updateMapMarkers(){
   var ids={};activeLeads.forEach(function(l){ids[String(l.id)]=true;});
   Object.keys(mapMarkers).forEach(function(id){if(!ids[id]){mapMarkers[id].setMap(null);delete mapMarkers[id];}});
   activeLeads.forEach(function(lead){
-    if(!lead.strasse||!lead.plz)return;
+    if(!lead.strasse&&!lead.ort)return; // need at least a city
     var id=String(lead.id);
     var color=colColor(lead.columnId);
     geocodeLead(lead).then(function(coords){
       if(!coords||!mapInst)return;
       if(mapMarkers[id]){mapMarkers[id].setPosition(coords);mapMarkers[id].setIcon(mkIcon(color,false));}
       else{
-        var m=new window.google.maps.Marker({position:coords,map:mapInst,icon:mkIcon(color,false),title:lead.strasse+" "+lead.hausnummer});
+        var markerTitle=lead.strasse?(lead.strasse+" "+lead.hausnummer):(lead.inseratNr?"Nr. "+lead.inseratNr:lead.ort);
+        var m=new window.google.maps.Marker({position:coords,map:mapInst,icon:mkIcon(color,false),title:markerTitle});
         m.addListener("mouseover",function(){
           var priceStr=lead.preis?"<br/><strong style='color:#3AA86C;font-size:12px'>"+formatPrice(lead.preis)+"</strong>":"";
           var scoreStr=lead.score?"<br/><span style='font-size:10px;background:#EEF2FF;color:#6B7FD4;padding:1px 5px;border-radius:10px;font-weight:700'>Score: "+lead.score+"</span>":"";
-          mapInfoW.setContent("<div style='font-family:sans-serif;padding:4px 2px;max-width:180px'><strong>"+esc(lead.strasse)+" "+esc(lead.hausnummer)+"</strong><br/><span style='color:#666;font-size:11px'>"+esc(lead.plz)+" "+esc(lead.ort)+" · "+esc(lead.objekttyp)+"</span>"+priceStr+scoreStr+"</div>");
+          var titleLine=lead.strasse?(esc(lead.strasse)+" "+esc(lead.hausnummer)):(lead.inseratNr?"Nr. "+esc(lead.inseratNr):esc(lead.ort));
+          var subLine=[(lead.plz||""),(lead.ort||""),(lead.objekttyp||"")].filter(Boolean).map(esc).join(" · ");
+          mapInfoW.setContent("<div style='font-family:sans-serif;padding:4px 2px;max-width:200px'><strong>"+titleLine+"</strong><br/><span style='color:#666;font-size:11px'>"+subLine+"</span>"+priceStr+scoreStr+"</div>");
           mapInfoW.open(mapInst,m);
           m.setIcon(mkIcon(color,true));m.setZIndex(999);
           var card=document.querySelector("[data-lead-id='"+lead.id+"']");
@@ -751,7 +771,7 @@ function syncMapWindow(){
   if(!mapWindowBuilt){buildMapWindow();return;}
   mw.style.display=S.map.visible?"block":"none";
   var countEl=document.getElementById("mw-count");
-  if(countEl){var cnt=getFilteredLeads().filter(function(l){return l.columnId!=="archiv"&&l.columnId!=="verworfen"&&l.strasse&&l.plz;}).length;countEl.textContent=cnt+" Objekte";}
+  if(countEl){var cnt=getFilteredLeads().filter(function(l){return l.columnId!=="archiv"&&l.columnId!=="verworfen"&&(l.strasse||l.ort);}).length;countEl.textContent=cnt+" Objekte";}
   if(mapReady)updateMapMarkers();
 }
 
