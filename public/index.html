@@ -1439,7 +1439,12 @@ function attachInputListeners(){
     });
     gs.addEventListener("blur",function(){
       // delay so click on result can fire first
-      setTimeout(function(){S.searchQuery="";render();},180);
+      // but don't clear if the new input (after render) already has focus
+      setTimeout(function(){
+        var ng=document.getElementById("global-search");
+        if(document.activeElement===ng)return;
+        S.searchQuery="";render();
+      },180);
     });
   }
 
@@ -1566,6 +1571,10 @@ function attachInputListeners(){
     colEl.addEventListener("dragstart",function(e){
       if(S.colLocked)return;
       if(e.target.dataset.leadId)return; // lead drag, not column drag
+      // Ensure colOrder is fully populated before we start swapping indices
+      if(!S.colOrder.length||S.colOrder.length<COLUMNS.length){
+        S.colOrder=orderedColumns().map(function(c){return c.id;});
+      }
       S.draggingColId=colEl.dataset.colId;
       S.dragId=null;
       e.dataTransfer.effectAllowed="move";
