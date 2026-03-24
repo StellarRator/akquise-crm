@@ -1055,7 +1055,7 @@ function renderLeadCard(lead,col){
   :'')+
   // Quick WV & Task picker (collapsed inline)
   (String(S.wvPickerLeadId)===String(lead.id)?
-    '<div style="margin-top:6px;padding:9px;background:#EFF6FF;border-radius:8px;border:1px solid #BFDBFE" onclick="event.stopPropagation()">'+
+    '<div style="margin-top:6px;padding:9px;background:#EFF6FF;border-radius:8px;border:1px solid #BFDBFE">'+
       '<p style="font-size:10px;font-weight:700;color:#0EA5E9;margin:0 0 5px">📅 Wiedervorlage setzen</p>'+
       '<input type="date" id="wv-date-inp-'+lead.id+'" value="'+esc(lead.wiedervorlage)+'" style="width:100%;padding:5px 8px;border-radius:7px;border:1px solid #BFDBFE;font-size:11px;margin-bottom:5px">'+
       '<div style="display:flex;gap:5px">'+
@@ -1066,7 +1066,7 @@ function renderLeadCard(lead,col){
     '</div>'
   :'')+
   (String(S.taskPickerLeadId)===String(lead.id)?
-    '<div style="margin-top:6px;padding:9px;background:#F0FDF4;border-radius:8px;border:1px solid #86EFAC" onclick="event.stopPropagation()">'+
+    '<div style="margin-top:6px;padding:9px;background:#F0FDF4;border-radius:8px;border:1px solid #86EFAC">'+
       '<p style="font-size:10px;font-weight:700;color:#15803D;margin:0 0 5px">📋 Task setzen</p>'+
       '<input type="text" id="task-text-inp-'+lead.id+'" value="'+esc(lead.task)+'" placeholder="Aufgabe beschreiben…" style="width:100%;padding:5px 8px;border-radius:7px;border:1px solid #86EFAC;font-size:11px;margin-bottom:5px;box-sizing:border-box">'+
       '<div style="display:flex;gap:6px;margin-bottom:5px;align-items:center">'+
