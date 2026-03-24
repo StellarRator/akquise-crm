@@ -1054,7 +1054,7 @@ function renderLeadCard(lead,col){
     '</div>'
   :'')+
   // Quick WV & Task picker (collapsed inline)
-  (S.wvPickerLeadId===lead.id?
+  (String(S.wvPickerLeadId)===String(lead.id)?
     '<div style="margin-top:6px;padding:9px;background:#EFF6FF;border-radius:8px;border:1px solid #BFDBFE" onclick="event.stopPropagation()">'+
       '<p style="font-size:10px;font-weight:700;color:#0EA5E9;margin:0 0 5px">📅 Wiedervorlage setzen</p>'+
       '<input type="date" id="wv-date-inp-'+lead.id+'" value="'+esc(lead.wiedervorlage)+'" style="width:100%;padding:5px 8px;border-radius:7px;border:1px solid #BFDBFE;font-size:11px;margin-bottom:5px">'+
@@ -1065,7 +1065,7 @@ function renderLeadCard(lead,col){
       '</div>'+
     '</div>'
   :'')+
-  (S.taskPickerLeadId===lead.id?
+  (String(S.taskPickerLeadId)===String(lead.id)?
     '<div style="margin-top:6px;padding:9px;background:#F0FDF4;border-radius:8px;border:1px solid #86EFAC" onclick="event.stopPropagation()">'+
       '<p style="font-size:10px;font-weight:700;color:#15803D;margin:0 0 5px">📋 Task setzen</p>'+
       '<input type="text" id="task-text-inp-'+lead.id+'" value="'+esc(lead.task)+'" placeholder="Aufgabe beschreiben…" style="width:100%;padding:5px 8px;border-radius:7px;border:1px solid #86EFAC;font-size:11px;margin-bottom:5px;box-sizing:border-box">'+
@@ -1415,6 +1415,9 @@ function renderMain(){
 function render(){
   var app=document.getElementById("app");
   if(!app)return;
+  // Save focused input (so typing in search/filter keeps cursor after re-render)
+  var prevFocusId=document.activeElement?document.activeElement.id:null;
+  var prevFocusPos=(document.activeElement&&document.activeElement.selectionStart!=null)?document.activeElement.selectionStart:-1;
   // Save scroll positions
   var scrolls={};
   document.querySelectorAll("[data-col-id]").forEach(function(el){
@@ -1429,6 +1432,14 @@ function render(){
   });
   if(S.auth)syncMapWindow();
   attachInputListeners();
+  // Restore focus to any text input that was active before re-render
+  if(prevFocusId){
+    var prevEl=document.getElementById(prevFocusId);
+    if(prevEl&&(prevEl.tagName==='INPUT'||prevEl.tagName==='TEXTAREA')){
+      prevEl.focus();
+      if(prevFocusPos>=0)try{prevEl.setSelectionRange(prevFocusPos,prevFocusPos);}catch(x){}
+    }
+  }
   // Auto-show overdue warning once per session
   if(!window._overdueShown&&getOverdueItems().length>0&&S.auth){
     window._overdueShown=true;S.showOverdueWarning=true;
@@ -1455,7 +1466,7 @@ function attachInputListeners(){
 
   // Filter inputs
   var fs=document.getElementById("filter-search");
-  if(fs){fs.addEventListener("input",function(e){S.filters.search=e.target.value;render();});}
+  if(fs){fs.addEventListener("input",function(e){S.filters.search=e.target.value;render();/* render() restores focus */});}
   var fq=document.getElementById("filter-quelle");
   if(fq)fq.addEventListener("change",function(e){S.filters.quelle=e.target.value;render();});
   var ft=document.getElementById("filter-typ");
@@ -1466,22 +1477,18 @@ function attachInputListeners(){
   if(gs){
     gs.addEventListener("input",function(e){
       S.searchQuery=e.target.value;
-      var pos=e.target.selectionStart;
-      render();
-      var ng=document.getElementById("global-search");
-      if(ng){ng.focus();try{ng.setSelectionRange(pos,pos);}catch(x){}}
+      render(); // render() now saves+restores focus automatically
     });
     gs.addEventListener("keydown",function(e){
       if(e.key==="Escape"){S.searchQuery="";render();}
     });
     gs.addEventListener("blur",function(){
-      // delay so click on result can fire first
-      // but don't clear if the new input (after render) already has focus
+      // Small delay so click on a search result can fire before we clear
       setTimeout(function(){
         var ng=document.getElementById("global-search");
-        if(document.activeElement===ng)return;
-        S.searchQuery="";render();
-      },180);
+        if(ng&&document.activeElement===ng)return; // still focused after re-render
+        if(S.searchQuery){S.searchQuery="";render();}
+      },200);
     });
   }
 
@@ -1607,11 +1614,11 @@ function attachInputListeners(){
   document.querySelectorAll("[data-col-id]").forEach(function(colEl){
     colEl.addEventListener("dragstart",function(e){
       if(S.colLocked)return;
-      if(e.target.dataset.leadId)return; // lead drag, not column drag
-      // Ensure colOrder is fully populated before we start swapping indices
-      if(!S.colOrder.length||S.colOrder.length<COLUMNS.length){
-        S.colOrder=orderedColumns().map(function(c){return c.id;});
-      }
+      // Only start column drag if user is NOT dragging a lead card
+      if(e.target.closest&&e.target.closest('.lead-card'))return;
+      if(!e.target.closest&&e.target.classList&&e.target.classList.contains('lead-card'))return;
+      // Ensure colOrder is fully populated (handles newly added columns)
+      S.colOrder=orderedColumns().map(function(c){return c.id;});
       S.draggingColId=colEl.dataset.colId;
       S.dragId=null;
       e.dataTransfer.effectAllowed="move";
