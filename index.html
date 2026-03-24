@@ -125,6 +125,7 @@ var S = {
   importFileRawData: null,
   importFileName: "",
   importColPreview: null,
+  importManualMap: null,
   filters: {prioritaet:"all",quelle:"all",objekttyp:"all",search:""},
   filterAufgaben: false,
   autoImportTimer: null,
@@ -457,16 +458,95 @@ function buildColPreview(data){
   return{isNew:isNew,mappings:mappings,rowCount:data.rows.filter(function(r){return r.some(function(c){return c;});}).length};
 }
 
+// Build manual map (auto-detected indices, user can override in UI)
+function buildInitialManualMap(data){
+  var h=data.cols.map(function(c){return c.toLowerCase();});
+  function fi(){
+    var names=Array.prototype.slice.call(arguments);
+    for(var n=0;n<names.length;n++){
+      var idx=h.findIndex(function(c){return c===names[n]||c.indexOf(names[n])>=0;});
+      if(idx>=0)return idx;
+    }
+    return -1;
+  }
+  var isNew=fi('imvo id','imvo')>=0||(fi('stadt')>=0&&fi('typ')>=0);
+  return{
+    isNew:isNew,
+    inseratNr:  fi('imvo id','imvo','inserat-nr.','inseratnr','id'),
+    strasse:    fi('stra\u00dfe','strasse','adresse','address'),
+    hausnummer: fi('hausnummer','nr.','nr'),
+    plz:        fi('postleitzahl','plz'),
+    ort:        fi('stadt','ort','city','gemeinde'),
+    stadtteil:  fi('stadtteil','bezirk','ortsteil'),
+    objekttyp:  fi('typ','objekttyp','art','immobilientyp'),
+    zimmer:     fi('zimmer','zi.','rooms'),
+    wohnflaeche:fi('wohnfl.','wohnfl\u00e4che','fl\u00e4che m\u00b2','wohnf'),
+    grundstueck:fi('grundfl.','grundst\u00fcck','grundf'),
+    baujahr:    fi('baujahr','bj','year'),
+    preis:      fi('preis','kaufpreis','price','kp'),
+    quelle:     fi('quelle','portal','source'),
+    publikation:fi('datum','publikation','ver\u00f6ffentlicht','datum einstellen','date'),
+    anbieter:   fi('anbieter','makler','eigent\u00fcmer','kontakt'),
+    vorname:    fi('vorname','first'),
+    nachname:   fi('nachname','name','last'),
+    mail:       fi('mail','e-mail','email'),
+    fon:        fi('telefon','fon','tel','phone','mobil'),
+    notizen:    fi('notiz','gespr','kommentar','bemerkung','anmerk')
+  };
+}
+
+// Map leads using explicit column-index assignments
+function mapLeadsFromManualMap(data, mm){
+  function g(row,i){return i>=0&&i<row.length?(row[i]||'').trim():'';}
+  var leads=[];
+  for(var i=0;i<data.rows.length;i++){
+    var row=data.rows[i];
+    var inseratNr=g(row,mm.inseratNr);
+    var strasse=g(row,mm.strasse);
+    var ort=g(row,mm.ort)||'Offenbach';
+    var fon=g(row,mm.fon);
+    // skip totally empty rows
+    if(!inseratNr&&!strasse&&!ort&&!fon&&!g(row,mm.preis))continue;
+    var rawTyp=g(row,mm.objekttyp);
+    var rawQ=g(row,mm.quelle);
+    var preisRaw=g(row,mm.preis).replace(/\./g,'').replace(',','.');
+    var preisClean=preisRaw.replace(/[^\d]/g,'');
+    var notizen=g(row,mm.notizen);
+    var anbieter=g(row,mm.anbieter);
+    var stadtteil=g(row,mm.stadtteil);
+    var zimmer=g(row,mm.zimmer);
+    var extra=[];
+    if(anbieter)extra.push('Anbieter: '+anbieter);
+    if(stadtteil&&stadtteil!==ort)extra.push('Stadtteil: '+stadtteil);
+    if(zimmer)extra.push('Zimmer: '+zimmer);
+    var fullNotizen=[notizen].concat(extra).filter(Boolean).join(' | ');
+    var lead={id:Date.now()+Math.random()+i,columnId:'lead',
+      strasse:strasse,hausnummer:g(row,mm.hausnummer),plz:g(row,mm.plz),ort:ort,
+      objekttyp:mapObjekttyp(rawTyp)||'Eigentumswohnung',
+      grundstueck:g(row,mm.grundstueck),wohnflaeche:g(row,mm.wohnflaeche),
+      baujahr:g(row,mm.baujahr),preis:preisClean,inseratLink:'',inseratNr:inseratNr,
+      publikation:g(row,mm.publikation),prioritaet:'warm',wiedervorlage:'',
+      vorname:g(row,mm.vorname),nachname:g(row,mm.nachname),mail:g(row,mm.mail),fon:fon,
+      quelle:mapQuelle(rawQ)||'Sonstige',score:0,notizen:fullNotizen,
+      aktivitaeten:[],erstelltAm:todayDE(),_importedAt:todayISO()};
+    lead.score=autoScore(lead);
+    leads.push(lead);
+  }
+  return leads;
+}
+
 function handleFileSelected(file){
   if(!file)return;
   S.importFileName=file.name;
   S.importColPreview=null;
+  S.importManualMap=null;
   S.importFileRawData=null;
   S.importStatus='file-loading';
   render();
   parseFileData(file).then(function(data){
     S.importFileRawData=data;
     S.importColPreview=buildColPreview(data);
+    S.importManualMap=buildInitialManualMap(data);
     S.importStatus='file-preview';
     render();
   }).catch(function(e){
@@ -478,7 +558,8 @@ function handleFileSelected(file){
 function doFileImport(){
   if(!S.importFileRawData){return;}
   S.importStatus='loading';render();
-  Promise.resolve(S.importFileRawData).then(mapLeadsFromData).then(function(leads){
+  var mm=S.importManualMap||buildInitialManualMap(S.importFileRawData);
+  Promise.resolve(mapLeadsFromManualMap(S.importFileRawData,mm)).then(function(leads){
     var newL=[],dupL=[];
     leads.forEach(function(l){if(isDuplicate(S.leads,l))dupL.push(l);else newL.push(l);});
     S.importFetched=newL;S.importDupes=dupL;S.importDupeDecisions={};S.importStatus='ready';render();
@@ -868,17 +949,60 @@ function renderImportModal(){
   if(!S.showImport)return"";
   var body="";
   if(S.importStatus==="loading"||S.importStatus==="file-loading")body='<div style="text-align:center;padding:28px 0"><div style="font-size:26px;margin-bottom:7px">⏳</div><p style="color:#64748B;font-size:13px">Wird geladen…</p></div>';
-  else if(S.importStatus==="file-preview"&&S.importColPreview){
-    var p=S.importColPreview;
-    var detected=p.mappings.filter(function(m){return m.src;}).length;
-    body='<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:9px;padding:10px 14px;margin-bottom:10px"><p style="color:#15803D;font-size:13px;font-weight:600;margin:0">'+esc(S.importFileName)+' · '+p.rowCount+' Zeilen · '+detected+'/'+p.mappings.length+' Spalten erkannt</p><p style="font-size:10px;color:#15803D;margin:3px 0 0">Format: '+(p.isNew?'IMVo-Liste (ETW/EFH/MFH…)':'CRM-Export (Straße/PLZ…)')+'</p></div>'+
-    '<div style="max-height:220px;overflow-y:auto;margin-bottom:14px"><table style="width:100%;border-collapse:collapse;font-size:11px">'+
-    '<thead><tr style="background:#F8FAFC"><th style="padding:5px 8px;text-align:left;color:#64748B;font-weight:600;border-bottom:1px solid #E2E8F0">CRM-Feld</th><th style="padding:5px 8px;text-align:left;color:#64748B;font-weight:600;border-bottom:1px solid #E2E8F0">Spalte in Datei</th></tr></thead><tbody>'+
-    p.mappings.map(function(m){
-      return'<tr style="border-bottom:1px solid #F4F1EC"><td style="padding:5px 8px;color:#1a1f35">'+esc(m.label)+'</td><td style="padding:5px 8px">'+(m.src?'<span style="background:#DCFCE7;color:#15803D;padding:1px 7px;border-radius:10px;font-weight:600">✓ '+esc(m.src)+'</span>':'<span style="color:#94A3B8;font-style:italic">— nicht erkannt —</span>')+'</td></tr>';
-    }).join('')+
-    '</tbody></table></div>'+
-    '<div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-file-import" class="btn-primary">'+p.rowCount+' Leads importieren</button></div>';
+  else if(S.importStatus==="file-preview"&&S.importFileRawData&&S.importManualMap){
+    var data=S.importFileRawData;
+    var mm=S.importManualMap;
+    var cols=data.cols;
+    var sample=data.rows[0]||[];
+    var rowCount=data.rows.filter(function(r){return r.some(function(c){return c;});}).length;
+    // build dropdown for a given field key
+    function colDrop(fieldKey,label,required){
+      var cur=mm[fieldKey];
+      var opts='<option value="-1"'+(cur===-1?' selected':'')+'>'+(required?'⚠ nicht zugeordnet':'— nicht importieren —')+'</option>'+
+        cols.map(function(c,i){
+          var ex=sample[i]?(' · "'+sample[i].substring(0,18)+(sample[i].length>18?'…':'')+'"'):'';
+          return'<option value="'+i+'"'+(cur===i?' selected':'')+'>'+esc(c)+esc(ex)+'</option>';
+        }).join('');
+      return'<tr style="border-bottom:1px solid #F4F1EC">'+
+        '<td style="padding:4px 8px;color:#1a1f35;font-size:11px;white-space:nowrap">'+
+          (required?'<span style="color:#EF4444;font-weight:700" title="Empfohlen">*</span> ':'')+esc(label)+
+        '</td>'+
+        '<td style="padding:4px 8px"><select data-mm="'+fieldKey+'" style="width:100%;padding:3px 6px;border-radius:6px;border:1px solid '+(cur>=0?"#86EFAC":"#E2E8F0")+';background:'+(cur>=0?"#F0FDF4":"#FAFAFA")+';font-size:11px;outline:none">'+opts+'</select></td>'+
+      '</tr>';
+    }
+    body='<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:9px;padding:9px 13px;margin-bottom:10px">'+
+      '<p style="font-size:12px;font-weight:600;color:#92400E;margin:0">📋 '+esc(S.importFileName)+' — '+rowCount+' Zeilen · '+cols.length+' Spalten</p>'+
+      '<p style="font-size:10px;color:#78350F;margin:3px 0 0">Ordne die Spalten den CRM-Feldern zu. Grün = erkannt, weiß = manuell wählen.</p>'+
+    '</div>'+
+    '<div style="max-height:300px;overflow-y:auto;margin-bottom:12px"><table style="width:100%;border-collapse:collapse">'+
+      '<thead><tr style="background:#F8FAFC;position:sticky;top:0"><th style="padding:5px 8px;text-align:left;color:#64748B;font-size:10px;font-weight:700;border-bottom:1px solid #E2E8F0">CRM-Feld</th><th style="padding:5px 8px;text-align:left;color:#64748B;font-size:10px;font-weight:700;border-bottom:1px solid #E2E8F0">Spalte in Datei (Beispielwert)</th></tr></thead>'+
+      '<tbody>'+
+        colDrop('inseratNr','Inserat-Nr. / IMVo-ID',false)+
+        colDrop('strasse','Straße',false)+
+        colDrop('hausnummer','Hausnummer',false)+
+        colDrop('plz','PLZ',false)+
+        colDrop('ort','Ort / Stadt',true)+
+        colDrop('stadtteil','Stadtteil',false)+
+        colDrop('objekttyp','Objekttyp / Typ',true)+
+        colDrop('zimmer','Zimmer',false)+
+        colDrop('wohnflaeche','Wohnfläche m²',false)+
+        colDrop('grundstueck','Grundstücksfläche m²',false)+
+        colDrop('baujahr','Baujahr',false)+
+        colDrop('preis','Preis / Kaufpreis',true)+
+        colDrop('quelle','Quelle / Portal',false)+
+        colDrop('publikation','Datum / Publikation',false)+
+        colDrop('anbieter','Anbieter / Kontakt',false)+
+        colDrop('vorname','Vorname',false)+
+        colDrop('nachname','Nachname',false)+
+        colDrop('mail','E-Mail',false)+
+        colDrop('fon','Telefon',false)+
+        colDrop('notizen','Notizen / Kommentar',false)+
+      '</tbody>'+
+    '</table></div>'+
+    '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+      '<button data-action="close-import" class="btn-secondary">Abbrechen</button>'+
+      '<button data-action="do-file-import" class="btn-primary">'+rowCount+' Leads importieren</button>'+
+    '</div>';
   }
   else if(S.importStatus.startsWith("error:"))body='<div style="background:#FFF5F5;border:1px solid #FCA5A5;border-radius:9px;padding:14px;margin-bottom:14px"><p style="color:#EF4444;font-size:13px;margin:0">Fehler: '+esc(S.importStatus.replace("error:",""))+'</p><p style="color:#94A3B8;font-size:11px;margin:6px 0 0">Stelle sicher dass die Datei nicht leer oder beschädigt ist.</p></div><div style="display:flex;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Schließen</button></div>';
   else if(S.importStatus==="ready")body='<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:9px;padding:10px 14px;margin-bottom:14px"><p style="color:#15803D;font-size:13px;font-weight:600;margin:0">'+S.importFetched.length+' neue Leads · '+S.importDupes.length+' Duplikate</p></div>'+
@@ -1022,6 +1146,16 @@ function attachInputListeners(){
   var ii=document.getElementById("import-interval-sel");
   if(ii)ii.addEventListener("change",function(e){S.importInterval=parseInt(e.target.value);});
 
+  // Manual column mapping dropdowns
+  document.querySelectorAll("[data-mm]").forEach(function(el){
+    el.addEventListener("change",function(e){
+      if(S.importManualMap)S.importManualMap[el.dataset.mm]=parseInt(e.target.value);
+      // update border color without full re-render
+      el.style.borderColor=parseInt(e.target.value)>=0?"#86EFAC":"#E2E8F0";
+      el.style.background=parseInt(e.target.value)>=0?"#F0FDF4":"#FAFAFA";
+    });
+  });
+
   // Dupe decisions
   document.querySelectorAll("[data-dupe-key]").forEach(function(el){
     el.addEventListener("change",function(e){S.importDupeDecisions[el.dataset.dupeKey]=e.target.value;render();});
@@ -1146,7 +1280,7 @@ document.addEventListener("click",function(e){
   if(action==="toggle-map"){S.map.visible=!S.map.visible;saveMapWin();render();syncMapWindow();return;}
   if(action==="export-csv"){exportCSV();return;}
   if(action==="open-import"){S.showImport=true;S.importStatus="idle";render();if(extractSheetId(S.importSheetInput))doImportFetch();return;}
-  if(action==="close-import"){S.showImport=false;S.importFileRawData=null;S.importFileName="";S.importColPreview=null;render();return;}
+  if(action==="close-import"){S.showImport=false;S.importFileRawData=null;S.importFileName="";S.importColPreview=null;S.importManualMap=null;render();return;}
   if(action==="do-file-import"){doFileImport();return;}
   if(action==="open-add"){S.showAdd=true;S.newLead=createLead();render();return;}
   if(action==="close-add"){S.showAdd=false;render();return;}
