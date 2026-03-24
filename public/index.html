@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Akquise CRM – Engel &amp; Völkers Offenbach</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'DM Sans',sans-serif;background:#F4F1EC;overflow:hidden}
@@ -120,6 +121,9 @@ var S = {
   importInterval: 0,
   importSheetInput: "",
   importSheetError: "",
+  importFileRawData: null,
+  importFileName: "",
+  importColPreview: null,
   filters: {prioritaet:"all",quelle:"all",objekttyp:"all",search:""},
   filterAufgaben: false,
   autoImportTimer: null,
@@ -280,10 +284,8 @@ function fetchViaGvizJSON(sheetId){
   });
 }
 
-function fetchSheetLeads(sheetId){
-  return fetchViaGvizJSON(sheetId).then(function(data){
+function mapLeadsFromData(data){
     var headers=data.cols.map(function(h){return h.toLowerCase();});
-    var rawHeaders=data.cols;
 
     function col(){
       var names=Array.prototype.slice.call(arguments);
@@ -367,7 +369,117 @@ function fetchSheetLeads(sheetId){
       }
     }
     return leads;
+}
+
+function fetchSheetLeads(sheetId){
+  return fetchViaGvizJSON(sheetId).then(mapLeadsFromData);
+}
+
+// ===================== FILE IMPORT =====================
+function parseFileData(file){
+  return new Promise(function(resolve,reject){
+    var ext=file.name.split('.').pop().toLowerCase();
+    var reader=new FileReader();
+    if(ext==='csv'){
+      reader.onload=function(e){
+        var text=e.target.result;
+        var lines=text.split(/\r?\n/).filter(function(l){return l.trim();});
+        if(!lines.length){reject(new Error('Leere Datei'));return;}
+        var cols=parseCSVLine(lines[0]);
+        var rows=lines.slice(1).map(parseCSVLine);
+        resolve({cols:cols,rows:rows});
+      };
+      reader.onerror=function(){reject(new Error('Lesefehler'));};
+      reader.readAsText(file,'UTF-8');
+    }else if(ext==='xlsx'||ext==='xls'){
+      reader.onload=function(e){
+        try{
+          if(!window.XLSX){reject(new Error('Excel-Bibliothek nicht geladen'));return;}
+          var wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
+          var ws=wb.Sheets[wb.SheetNames[0]];
+          var arr=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+          if(!arr.length){reject(new Error('Leere Tabelle'));return;}
+          var cols=(arr[0]||[]).map(String);
+          var rows=arr.slice(1).map(function(r){return r.map(String);});
+          resolve({cols:cols,rows:rows});
+        }catch(err){reject(new Error('Excel-Fehler: '+err.message));}
+      };
+      reader.onerror=function(){reject(new Error('Lesefehler'));};
+      reader.readAsArrayBuffer(file);
+    }else{
+      reject(new Error('Nur .xlsx, .xls, .csv werden unterstützt'));
+    }
   });
+}
+
+function buildColPreview(data){
+  var headers=data.cols.map(function(h){return h.toLowerCase();});
+  function colFind(){
+    var names=Array.prototype.slice.call(arguments);
+    for(var n=0;n<names.length;n++){
+      var idx=headers.findIndex(function(h){return h===names[n]||h.indexOf(names[n])>=0;});
+      if(idx>=0)return data.cols[idx];
+    }
+    return null;
+  }
+  var isNew=colFind('imvo id','imvo')!==null||(colFind('stadt')!==null&&colFind('typ')!==null);
+  var mappings=isNew?[
+    {label:'Inserat-Nr (IMVo ID)',src:colFind('imvo id','imvo')},
+    {label:'Stadt / Ort',src:colFind('stadt')},
+    {label:'Stadtteil',src:colFind('stadtteil')},
+    {label:'Objekttyp (Typ)',src:colFind('typ')},
+    {label:'Zimmer',src:colFind('zimmer')},
+    {label:'Wohnfläche',src:colFind('wohnfl.')},
+    {label:'Grundfläche',src:colFind('grundfl.')},
+    {label:'Baujahr',src:colFind('baujahr')},
+    {label:'Preis',src:colFind('preis')},
+    {label:'Quelle',src:colFind('quelle')},
+    {label:'Datum',src:colFind('datum','publikationsdatum')},
+    {label:'Anbieter',src:colFind('anbieter')},
+    {label:'Telefon',src:colFind('telefon','fon')},
+    {label:'Gesprächsnotizen',src:colFind('gespr','notizen')}
+  ]:[
+    {label:'Straße',src:colFind('stra\u00dfe','strasse')},
+    {label:'Hausnummer',src:colFind('hausnummer')},
+    {label:'PLZ',src:colFind('postleitzahl','plz')},
+    {label:'Ort',src:colFind('ort','stadt')},
+    {label:'Objekttyp',src:colFind('objekttyp','typ')},
+    {label:'Wohnfläche',src:colFind('wohnfl\u00e4che','wohnfl.')},
+    {label:'Baujahr',src:colFind('baujahr')},
+    {label:'Preis',src:colFind('preis')},
+    {label:'Telefon',src:colFind('fon','telefon')},
+    {label:'Quelle',src:colFind('quelle')},
+    {label:'Notizen',src:colFind('notizen','gespr')}
+  ];
+  return{isNew:isNew,mappings:mappings,rowCount:data.rows.filter(function(r){return r.some(function(c){return c;});}).length};
+}
+
+function handleFileSelected(file){
+  if(!file)return;
+  S.importFileName=file.name;
+  S.importColPreview=null;
+  S.importFileRawData=null;
+  S.importStatus='file-loading';
+  render();
+  parseFileData(file).then(function(data){
+    S.importFileRawData=data;
+    S.importColPreview=buildColPreview(data);
+    S.importStatus='file-preview';
+    render();
+  }).catch(function(e){
+    S.importStatus='error:'+e.message;
+    render();
+  });
+}
+
+function doFileImport(){
+  if(!S.importFileRawData){return;}
+  S.importStatus='loading';render();
+  Promise.resolve(S.importFileRawData).then(mapLeadsFromData).then(function(leads){
+    var newL=[],dupL=[];
+    leads.forEach(function(l){if(isDuplicate(S.leads,l))dupL.push(l);else newL.push(l);});
+    S.importFetched=newL;S.importDupes=dupL;S.importDupeDecisions={};S.importStatus='ready';render();
+  }).catch(function(e){S.importStatus='error:'+e.message;render();});
 }
 
 function doImportFetch(){
@@ -707,11 +819,38 @@ function renderAddModal(){
 function renderImportModal(){
   if(!S.showImport)return"";
   var body="";
-  if(S.importStatus==="loading")body='<div style="text-align:center;padding:28px 0"><div style="font-size:26px;margin-bottom:7px">⏳</div><p style="color:#64748B;font-size:13px">Wird geladen…</p></div>';
-  else if(S.importStatus.startsWith("error:"))body='<div style="background:#FFF5F5;border:1px solid #FCA5A5;border-radius:9px;padding:14px;margin-bottom:14px"><p style="color:#EF4444;font-size:13px;margin:0">Fehler: '+esc(S.importStatus.replace("error:",""))+'</p><p style="color:#94A3B8;font-size:11px;margin:6px 0 0">Stelle sicher, dass die Tabelle öffentlich geteilt ist.</p></div>';
+  if(S.importStatus==="loading"||S.importStatus==="file-loading")body='<div style="text-align:center;padding:28px 0"><div style="font-size:26px;margin-bottom:7px">⏳</div><p style="color:#64748B;font-size:13px">Wird geladen…</p></div>';
+  else if(S.importStatus==="file-preview"&&S.importColPreview){
+    var p=S.importColPreview;
+    var detected=p.mappings.filter(function(m){return m.src;}).length;
+    body='<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:9px;padding:10px 14px;margin-bottom:10px"><p style="color:#15803D;font-size:13px;font-weight:600;margin:0">'+esc(S.importFileName)+' · '+p.rowCount+' Zeilen · '+detected+'/'+p.mappings.length+' Spalten erkannt</p><p style="font-size:10px;color:#15803D;margin:3px 0 0">Format: '+(p.isNew?'IMVo-Liste (ETW/EFH/MFH…)':'CRM-Export (Straße/PLZ…)')+'</p></div>'+
+    '<div style="max-height:220px;overflow-y:auto;margin-bottom:14px"><table style="width:100%;border-collapse:collapse;font-size:11px">'+
+    '<thead><tr style="background:#F8FAFC"><th style="padding:5px 8px;text-align:left;color:#64748B;font-weight:600;border-bottom:1px solid #E2E8F0">CRM-Feld</th><th style="padding:5px 8px;text-align:left;color:#64748B;font-weight:600;border-bottom:1px solid #E2E8F0">Spalte in Datei</th></tr></thead><tbody>'+
+    p.mappings.map(function(m){
+      return'<tr style="border-bottom:1px solid #F4F1EC"><td style="padding:5px 8px;color:#1a1f35">'+esc(m.label)+'</td><td style="padding:5px 8px">'+(m.src?'<span style="background:#DCFCE7;color:#15803D;padding:1px 7px;border-radius:10px;font-weight:600">✓ '+esc(m.src)+'</span>':'<span style="color:#94A3B8;font-style:italic">— nicht erkannt —</span>')+'</td></tr>';
+    }).join('')+
+    '</tbody></table></div>'+
+    '<div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-file-import" class="btn-primary">'+p.rowCount+' Leads importieren</button></div>';
+  }
+  else if(S.importStatus.startsWith("error:"))body='<div style="background:#FFF5F5;border:1px solid #FCA5A5;border-radius:9px;padding:14px;margin-bottom:14px"><p style="color:#EF4444;font-size:13px;margin:0">Fehler: '+esc(S.importStatus.replace("error:",""))+'</p><p style="color:#94A3B8;font-size:11px;margin:6px 0 0">Stelle sicher dass die Datei nicht leer oder beschädigt ist.</p></div><div style="display:flex;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Schließen</button></div>';
   else if(S.importStatus==="ready")body='<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:9px;padding:10px 14px;margin-bottom:14px"><p style="color:#15803D;font-size:13px;font-weight:600;margin:0">'+S.importFetched.length+' neue Leads · '+S.importDupes.length+' Duplikate</p></div>'+
-    (S.importDupes.length?'<p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 7px">Duplikate – trotzdem importieren?</p>'+S.importDupes.map(function(d){var key=d.inseratNr||d.strasse;return'<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#FFFBEB;border-radius:7px;margin-bottom:3px"><span style="font-size:11px;color:#1a1f35">'+esc(d.strasse)+' '+esc(d.hausnummer)+', '+esc(d.plz)+'</span><select data-dupe-key="'+esc(key)+'" style="font-size:11px;border:1px solid #E2E8F0;border-radius:6px;padding:3px 6px"><option value="skip">Überspringen</option><option value="import" '+(S.importDupeDecisions[key]==="import"?"selected":"")+'>Importieren</option></select></div>';}).join(""):"")+'<div style="margin-bottom:14px;padding:10px 13px;background:#F8FAFC;border-radius:9px"><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Auto-Import Intervall</p><select id="import-interval-sel" style="padding:6px 10px;border-radius:8px;border:1px solid #E2E8F0;font-size:12px"><option value="0" '+(S.importInterval==0?"selected":"")+'>Kein Auto-Import</option><option value="15" '+(S.importInterval==15?"selected":"")+'>Alle 15 Minuten</option><option value="30" '+(S.importInterval==30?"selected":"")+'>Alle 30 Minuten</option><option value="60" '+(S.importInterval==60?"selected":"")+'>Stündlich</option><option value="360" '+(S.importInterval==360?"selected":"")+'>Alle 6 Stunden</option></select></div><div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-import" class="btn-primary">'+(S.importFetched.length+Object.values(S.importDupeDecisions).filter(function(v){return v==="import";}).length)+' Leads importieren</button></div>';
-  return'<div class="modal-overlay" id="import-modal"><div class="modal-box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><h2 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35">Google Sheets Import</h2><button data-action="close-import" style="width:28px;height:28px;border-radius:8px;border:none;background:#F4F1EC;cursor:pointer;font-size:16px">×</button></div><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Google Sheets URL oder Sheet-ID</p><div style="display:flex;gap:7px;margin-bottom:6px"><input id="sheet-input" value="'+esc(S.importSheetInput)+'" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid '+(S.importSheetError?"#FCA5A5":"#E2E8F0")+';font-size:12px;outline:none"><button data-action="fetch-sheet" style="padding:8px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#6B7FD4,#A855F7);color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Laden</button></div>'+(S.importSheetError?'<p style="color:#EF4444;font-size:11px;margin:0 0 8px">'+esc(S.importSheetError)+'</p>':'')+'<p style="font-size:10px;color:#94A3B8;margin:0 0 14px">Tabelle muss öffentlich geteilt sein (Betrachter). Format wird automatisch erkannt: IMVo ID, Stadt, Typ (ETW/EFH/MFH/DHH...), Wohnfl., Preis, Quelle, Telefon, Gesprächsnotizen</p>'+body+'</div></div>';
+    (S.importDupes.length?'<p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 7px">Duplikate – trotzdem importieren?</p>'+S.importDupes.map(function(d){var key=d.inseratNr||d.strasse;return'<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#FFFBEB;border-radius:7px;margin-bottom:3px"><span style="font-size:11px;color:#1a1f35">'+esc(d.strasse||d.inseratNr)+' '+esc(d.hausnummer||'')+', '+esc(d.plz||d.ort)+'</span><select data-dupe-key="'+esc(key)+'" style="font-size:11px;border:1px solid #E2E8F0;border-radius:6px;padding:3px 6px"><option value="skip">Überspringen</option><option value="import" '+(S.importDupeDecisions[key]==="import"?"selected":"")+'>Importieren</option></select></div>';}).join(""):"")+'<div style="margin-bottom:14px;padding:10px 13px;background:#F8FAFC;border-radius:9px"><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Auto-Import Intervall (nur Google Sheets)</p><select id="import-interval-sel" style="padding:6px 10px;border-radius:8px;border:1px solid #E2E8F0;font-size:12px"><option value="0" '+(S.importInterval==0?"selected":"")+'>Kein Auto-Import</option><option value="15" '+(S.importInterval==15?"selected":"")+'>Alle 15 Minuten</option><option value="30" '+(S.importInterval==30?"selected":"")+'>Alle 30 Minuten</option><option value="60" '+(S.importInterval==60?"selected":"")+'>Stündlich</option><option value="360" '+(S.importInterval==360?"selected":"")+'>Alle 6 Stunden</option></select></div><div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-import" class="btn-primary">'+(S.importFetched.length+Object.values(S.importDupeDecisions).filter(function(v){return v==="import";}).length)+' Leads importieren</button></div>';
+  return'<div class="modal-overlay" id="import-modal"><div class="modal-box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><h2 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35">Leads importieren</h2><button data-action="close-import" style="width:28px;height:28px;border-radius:8px;border:none;background:#F4F1EC;cursor:pointer;font-size:16px">×</button></div>'+
+  '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">'+
+  '<div style="padding:12px;border-radius:10px;border:2px solid '+(S.importFileRawData||S.importStatus.startsWith("file")?"#6B7FD4":"#E2E8F0")+';background:'+(S.importFileRawData||S.importStatus.startsWith("file")?"#EEF2FF":"#FAFAFA")+'">'+
+  '<p style="font-size:11px;font-weight:700;color:#6B7FD4;margin:0 0 8px">📂 DATEI-UPLOAD</p>'+
+  '<label for="file-import-input" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px dashed #6B7FD4;border-radius:8px;cursor:pointer;background:#fff">'+
+  '<span style="font-size:18px">📊</span>'+
+  '<div style="min-width:0"><p style="font-size:11px;font-weight:600;color:#1a1f35;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(S.importFileName?esc(S.importFileName):'Excel / CSV auswählen')+'</p><p style="font-size:9px;color:#94A3B8;margin:0">.xlsx · .xls · .csv</p></div>'+
+  '</label>'+
+  '<input type="file" id="file-import-input" accept=".xlsx,.xls,.csv" style="display:none">'+
+  '</div>'+
+  '<div style="padding:12px;border-radius:10px;border:2px solid #E2E8F0;background:#FAFAFA">'+
+  '<p style="font-size:11px;font-weight:700;color:#94A3B8;margin:0 0 8px">🔗 GOOGLE SHEETS</p>'+
+  '<div style="display:flex;gap:5px;margin-bottom:4px"><input id="sheet-input" value="'+esc(S.importSheetInput)+'" placeholder="URL oder Sheet-ID" style="flex:1;padding:6px 8px;border-radius:7px;border:1px solid '+(S.importSheetError?"#FCA5A5":"#E2E8F0")+';font-size:11px;outline:none"><button data-action="fetch-sheet" style="padding:6px 10px;border-radius:7px;border:none;background:#6B7FD4;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap">Laden</button></div>'+
+  (S.importSheetError?'<p style="color:#EF4444;font-size:10px;margin:0">'+esc(S.importSheetError)+'</p>':'<p style="font-size:9px;color:#94A3B8;margin:0">Tabelle muss öffentlich (Betrachter) geteilt sein</p>')+
+  '</div></div>'+
+  body+'</div></div>';
 }
 
 // ===================== RENDER LOGIN =====================
@@ -789,6 +928,10 @@ function attachInputListeners(){
   // Sheet input
   var si=document.getElementById("sheet-input");
   if(si)si.addEventListener("input",function(e){S.importSheetInput=e.target.value;S.importSheetError="";});
+
+  // File import input
+  var fi=document.getElementById("file-import-input");
+  if(fi)fi.addEventListener("change",function(e){if(e.target.files&&e.target.files[0])handleFileSelected(e.target.files[0]);});
 
   // Import interval
   var ii=document.getElementById("import-interval-sel");
@@ -902,7 +1045,8 @@ document.addEventListener("click",function(e){
   if(action==="toggle-map"){S.map.visible=!S.map.visible;saveMapWin();render();syncMapWindow();return;}
   if(action==="export-csv"){exportCSV();return;}
   if(action==="open-import"){S.showImport=true;S.importStatus="idle";render();if(extractSheetId(S.importSheetInput))doImportFetch();return;}
-  if(action==="close-import"){S.showImport=false;render();return;}
+  if(action==="close-import"){S.showImport=false;S.importFileRawData=null;S.importFileName="";S.importColPreview=null;render();return;}
+  if(action==="do-file-import"){doFileImport();return;}
   if(action==="open-add"){S.showAdd=true;S.newLead=createLead();render();return;}
   if(action==="close-add"){S.showAdd=false;render();return;}
   if(action==="save-lead"){addLead();return;}
