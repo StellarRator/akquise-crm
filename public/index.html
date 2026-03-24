@@ -89,13 +89,22 @@ function extractSheetId(input){
   if(/^[a-zA-Z0-9_-]{20,}$/.test(input.trim()))return input.trim();
   return null;
 }
-function isDuplicate(existing,lead){
-  return existing.some(function(l){
-    if(l.inseratNr&&lead.inseratNr&&l.inseratNr===lead.inseratNr)return true;
-    if(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.hausnummer===lead.hausnummer&&l.plz===lead.plz)return true;
-    return false;
-  });
+function getDupeReason(existing,lead){
+  // Returns a description of WHY it's a duplicate, or null if not a dupe
+  for(var i=0;i<existing.length;i++){
+    var l=existing[i];
+    if(l.inseratNr&&lead.inseratNr&&l.inseratNr===lead.inseratNr)
+      return'Inserat-Nr. '+lead.inseratNr+' bereits vorhanden';
+    if(l.fon&&lead.fon&&l.fon.replace(/[\s\-]/g,'')===lead.fon.replace(/[\s\-]/g,'')&&l.fon.length>6)
+      return'Telefon '+lead.fon+' bereits vorhanden';
+    if(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.hausnummer===lead.hausnummer&&l.plz===lead.plz)
+      return'Adresse '+lead.strasse+' '+lead.hausnummer+' bereits vorhanden';
+    if(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.ort===lead.ort&&l.objekttyp===lead.objekttyp&&l.preis===lead.preis&&lead.preis)
+      return'Gleiche Adresse+Typ+Preis in '+lead.ort;
+  }
+  return null;
 }
+function isDuplicate(existing,lead){return getDupeReason(existing,lead)!==null;}
 
 // ===================== STATE =====================
 var S = {
@@ -131,7 +140,9 @@ var S = {
   autoImportTimer: null,
   map: {visible:true,minimized:false,x:0,y:110,w:500,h:390},
   searchQuery: "",
-  scrollToLeadId: null
+  scrollToLeadId: null,
+  showDelete: false,
+  deleteSelected: {}
 };
 
 // Init from localStorage
@@ -404,7 +415,7 @@ function parseFileData(file){
           var arr=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
           if(!arr.length){reject(new Error('Leere Tabelle'));return;}
           var cols=(arr[0]||[]).map(String);
-          var rows=arr.slice(1).map(function(r){return r.map(String);});
+          var rows=arr.slice(1).filter(function(r){return r.some(function(c){return String(c).trim().length>0;});}).map(function(r){return r.map(String);});
           resolve({cols:cols,rows:rows});
         }catch(err){reject(new Error('Excel-Fehler: '+err.message));}
       };
@@ -505,10 +516,11 @@ function mapLeadsFromManualMap(data, mm){
     var row=data.rows[i];
     var inseratNr=g(row,mm.inseratNr);
     var strasse=g(row,mm.strasse);
-    var ort=g(row,mm.ort)||'Offenbach';
+    var ortRaw=g(row,mm.ort);
+    var ort=ortRaw||'Offenbach';
     var fon=g(row,mm.fon);
-    // skip totally empty rows
-    if(!inseratNr&&!strasse&&!ort&&!fon&&!g(row,mm.preis))continue;
+    // skip empty rows (use ortRaw so the fallback doesn't mask truly empty rows)
+    if(!inseratNr&&!strasse&&!ortRaw&&!fon&&!g(row,mm.preis))continue;
     var rawTyp=g(row,mm.objekttyp);
     var rawQ=g(row,mm.quelle);
     var preisRaw=g(row,mm.preis).replace(/\./g,'').replace(',','.');
@@ -563,7 +575,7 @@ function doFileImport(){
   var mm=S.importManualMap||buildInitialManualMap(S.importFileRawData);
   Promise.resolve(mapLeadsFromManualMap(S.importFileRawData,mm)).then(function(leads){
     var newL=[],dupL=[];
-    leads.forEach(function(l){if(isDuplicate(S.leads,l))dupL.push(l);else newL.push(l);});
+    leads.forEach(function(l){var r=getDupeReason(S.leads,l);if(r){l._dupeReason=r;dupL.push(l);}else newL.push(l);});
     S.importFetched=newL;S.importDupes=dupL;S.importDupeDecisions={};S.importStatus='ready';render();
   }).catch(function(e){S.importStatus='error:'+e.message;render();});
 }
@@ -575,7 +587,7 @@ function doImportFetch(){
   S.importStatus="loading";render();
   fetchSheetLeads(id).then(function(leads){
     var newL=[],dupL=[];
-    leads.forEach(function(l){if(isDuplicate(S.leads,l))dupL.push(l);else newL.push(l);});
+    leads.forEach(function(l){var r=getDupeReason(S.leads,l);if(r){l._dupeReason=r;dupL.push(l);}else newL.push(l);});
     S.importFetched=newL;S.importDupes=dupL;S.importDupeDecisions={};S.importStatus="ready";render();
   }).catch(function(e){S.importStatus="error:"+e.message;render();});
 }
@@ -1013,7 +1025,24 @@ function renderImportModal(){
   }
   else if(S.importStatus.startsWith("error:"))body='<div style="background:#FFF5F5;border:1px solid #FCA5A5;border-radius:9px;padding:14px;margin-bottom:14px"><p style="color:#EF4444;font-size:13px;margin:0">Fehler: '+esc(S.importStatus.replace("error:",""))+'</p><p style="color:#94A3B8;font-size:11px;margin:6px 0 0">Stelle sicher dass die Datei nicht leer oder beschädigt ist.</p></div><div style="display:flex;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Schließen</button></div>';
   else if(S.importStatus==="ready")body='<div style="background:#F0FDF4;border:1px solid #86EFAC;border-radius:9px;padding:10px 14px;margin-bottom:14px"><p style="color:#15803D;font-size:13px;font-weight:600;margin:0">'+S.importFetched.length+' neue Leads · '+S.importDupes.length+' Duplikate</p></div>'+
-    (S.importDupes.length?'<p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 7px">Duplikate – trotzdem importieren?</p>'+S.importDupes.map(function(d){var key=d.inseratNr||d.strasse;return'<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#FFFBEB;border-radius:7px;margin-bottom:3px"><span style="font-size:11px;color:#1a1f35">'+esc(d.strasse||d.inseratNr)+' '+esc(d.hausnummer||'')+', '+esc(d.plz||d.ort)+'</span><select data-dupe-key="'+esc(key)+'" style="font-size:11px;border:1px solid #E2E8F0;border-radius:6px;padding:3px 6px"><option value="skip">Überspringen</option><option value="import" '+(S.importDupeDecisions[key]==="import"?"selected":"")+'>Importieren</option></select></div>';}).join(""):"")+'<div style="margin-bottom:14px;padding:10px 13px;background:#F8FAFC;border-radius:9px"><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Auto-Import Intervall (nur Google Sheets)</p><select id="import-interval-sel" style="padding:6px 10px;border-radius:8px;border:1px solid #E2E8F0;font-size:12px"><option value="0" '+(S.importInterval==0?"selected":"")+'>Kein Auto-Import</option><option value="15" '+(S.importInterval==15?"selected":"")+'>Alle 15 Minuten</option><option value="30" '+(S.importInterval==30?"selected":"")+'>Alle 30 Minuten</option><option value="60" '+(S.importInterval==60?"selected":"")+'>Stündlich</option><option value="360" '+(S.importInterval==360?"selected":"")+'>Alle 6 Stunden</option></select></div><div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-import" class="btn-primary">'+(S.importFetched.length+Object.values(S.importDupeDecisions).filter(function(v){return v==="import";}).length)+' Leads importieren</button></div>';
+    (S.importDupes.length?'<p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 7px">⚠ '+S.importDupes.length+' Duplikat'+(S.importDupes.length===1?'':'e')+' erkannt – trotzdem importieren?</p>'+
+      '<div style="max-height:200px;overflow-y:auto;margin-bottom:10px">'+
+      S.importDupes.map(function(d){
+        var key=d.inseratNr||d.strasse||d.fon||String(d.id);
+        var title=d.strasse?(d.strasse+(d.hausnummer?' '+d.hausnummer:'')):(d.inseratNr?'Nr. '+d.inseratNr:'Lead');
+        return'<div style="display:flex;align-items:center;gap:8px;justify-content:space-between;padding:7px 10px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:7px;margin-bottom:4px">'+
+          '<div style="flex:1;min-width:0">'+
+            '<p style="font-size:11px;font-weight:600;color:#1a1f35;margin:0">'+esc(title)+'</p>'+
+            '<p style="font-size:10px;color:#78350F;margin:0">🔍 '+esc(d._dupeReason||'Duplikat erkannt')+'</p>'+
+          '</div>'+
+          '<select data-dupe-key="'+esc(key)+'" style="font-size:11px;border:1px solid #E2E8F0;border-radius:6px;padding:3px 6px;flex-shrink:0">'+
+            '<option value="skip" '+(S.importDupeDecisions[key]!=="import"?'selected':'')+'>Überspringen</option>'+
+            '<option value="import" '+(S.importDupeDecisions[key]==="import"?'selected':'')+'>Importieren</option>'+
+          '</select>'+
+        '</div>';
+      }).join('')+
+      '</div>'
+    :"")+'<div style="margin-bottom:14px;padding:10px 13px;background:#F8FAFC;border-radius:9px"><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0 0 6px">Auto-Import Intervall (nur Google Sheets)</p><select id="import-interval-sel" style="padding:6px 10px;border-radius:8px;border:1px solid #E2E8F0;font-size:12px"><option value="0" '+(S.importInterval==0?"selected":"")+'>Kein Auto-Import</option><option value="15" '+(S.importInterval==15?"selected":"")+'>Alle 15 Minuten</option><option value="30" '+(S.importInterval==30?"selected":"")+'>Alle 30 Minuten</option><option value="60" '+(S.importInterval==60?"selected":"")+'>Stündlich</option><option value="360" '+(S.importInterval==360?"selected":"")+'>Alle 6 Stunden</option></select></div><div style="display:flex;gap:10px;justify-content:flex-end"><button data-action="close-import" class="btn-secondary">Abbrechen</button><button data-action="do-import" class="btn-primary">'+(S.importFetched.length+Object.values(S.importDupeDecisions).filter(function(v){return v==="import";}).length)+' Leads importieren</button></div>';
   return'<div class="modal-overlay" id="import-modal"><div class="modal-box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><h2 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35">Leads importieren</h2><button data-action="close-import" style="width:28px;height:28px;border-radius:8px;border:none;background:#F4F1EC;cursor:pointer;font-size:16px">×</button></div>'+
   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">'+
   '<div style="padding:12px;border-radius:10px;border:2px solid '+(S.importFileRawData||S.importStatus.startsWith("file")?"#6B7FD4":"#E2E8F0")+';background:'+(S.importFileRawData||S.importStatus.startsWith("file")?"#EEF2FF":"#FAFAFA")+'">'+
@@ -1033,6 +1062,60 @@ function renderImportModal(){
 }
 
 // ===================== RENDER LOGIN =====================
+// ===================== RENDER DELETE MODAL =====================
+function renderDeleteModal(){
+  if(!S.showDelete)return"";
+  var leads=S.leads;
+  var selCount=Object.keys(S.deleteSelected).filter(function(k){return S.deleteSelected[k];}).length;
+  var allChecked=leads.length>0&&selCount===leads.length;
+  var is="font-size:11px;";
+  var grouped={};
+  COLUMNS.forEach(function(c){grouped[c.id]=[];});
+  leads.forEach(function(l){if(grouped[l.columnId])grouped[l.columnId].push(l);else grouped['lead']=(grouped['lead']||[]).concat([l]);});
+  var rows=COLUMNS.map(function(col){
+    var colLeads=grouped[col.id]||[];
+    if(!colLeads.length)return'';
+    return'<tr><td colspan="4" style="padding:6px 10px 3px;background:#F8FAFC;font-size:10px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px">'+esc(col.label)+' ('+colLeads.length+')</td></tr>'+
+      colLeads.map(function(l){
+        var sel=!!S.deleteSelected[l.id];
+        var title=l.strasse?(l.strasse+(l.hausnummer?' '+l.hausnummer:'')):(l.inseratNr?'Nr. '+l.inseratNr:'Lead');
+        var sub=[(l.plz||''),(l.ort||''),(l.objekttyp||'')].filter(Boolean).join(' · ');
+        return'<tr style="border-bottom:1px solid #F4F1EC;background:'+(sel?'#FFF5F5':'')+'">'+
+          '<td style="padding:5px 10px;width:30px"><input type="checkbox" data-del-id="'+l.id+'" '+(sel?'checked':'')+' style="cursor:pointer;width:14px;height:14px"></td>'+
+          '<td style="padding:5px 8px"><p style="font-size:12px;font-weight:600;color:#1a1f35;margin:0">'+esc(title)+'</p><p style="font-size:10px;color:#94A3B8;margin:0">'+esc(sub)+'</p></td>'+
+          '<td style="padding:5px 8px;font-size:10px;color:#64748B">'+(l.fon?'📞 '+esc(l.fon):'')+'</td>'+
+          '<td style="padding:5px 8px;font-size:10px;color:#64748B">'+(l.erstelltAm?esc(l.erstelltAm):'')+'</td>'+
+        '</tr>';
+      }).join('');
+  }).join('');
+  return'<div class="modal-overlay" id="delete-modal"><div class="modal-box" style="max-width:700px;max-height:85vh;display:flex;flex-direction:column">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-shrink:0">'+
+      '<h2 style="font-family:\'Playfair Display\',serif;font-size:17px;color:#1a1f35;margin:0">Leads löschen</h2>'+
+      '<button data-action="close-delete" style="width:28px;height:28px;border-radius:8px;border:none;background:#F4F1EC;cursor:pointer;font-size:16px">×</button>'+
+    '</div>'+
+    '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:#FFF5F5;border:1px solid #FCA5A5;border-radius:9px;margin-bottom:10px;flex-shrink:0">'+
+      '<input type="checkbox" id="del-all-cb" '+(allChecked?'checked':'')+' style="cursor:pointer;width:15px;height:15px">'+
+      '<label for="del-all-cb" style="font-size:12px;font-weight:600;color:#EF4444;cursor:pointer;flex:1">Alle '+leads.length+' Leads auswählen</label>'+
+      (selCount>0?'<span style="font-size:11px;color:#EF4444;font-weight:600">'+selCount+' ausgewählt</span>':'<span style="font-size:11px;color:#94A3B8">Nichts ausgewählt</span>')+
+    '</div>'+
+    '<div style="flex:1;overflow-y:auto;border:1px solid #E2E8F0;border-radius:9px;margin-bottom:12px">'+
+      '<table style="width:100%;border-collapse:collapse">'+
+        '<thead style="position:sticky;top:0;background:#F8FAFC;z-index:1"><tr>'+
+          '<th style="padding:6px 10px;width:30px"></th>'+
+          '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:700">LEAD</th>'+
+          '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:700">TELEFON</th>'+
+          '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#64748B;font-weight:700">ERSTELLT</th>'+
+        '</tr></thead>'+
+        '<tbody>'+rows+'</tbody>'+
+      '</table>'+
+    '</div>'+
+    '<div style="display:flex;gap:10px;justify-content:flex-end;flex-shrink:0">'+
+      '<button data-action="close-delete" class="btn-secondary">Abbrechen</button>'+
+      (selCount>0?'<button data-action="confirm-delete" style="padding:7px 16px;border-radius:9px;border:none;background:#EF4444;color:#fff;font-size:13px;font-weight:600;cursor:pointer">🗑 '+selCount+' Lead'+(selCount===1?'':'s')+' löschen</button>':'<button disabled style="padding:7px 16px;border-radius:9px;border:none;background:#E2E8F0;color:#94A3B8;font-size:13px;cursor:not-allowed">Löschen</button>')+
+    '</div>'+
+  '</div></div>';
+}
+
 function renderLogin(){
   return'<div style="min-height:100vh;background:linear-gradient(135deg,#1a1f35 0%,#2d3561 50%,#1a1f35 100%);display:flex;align-items:center;justify-content:center"><div style="background:rgba(255,255,255,0.05);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,0.1);border-radius:24px;padding:48px 40px;width:360px;box-shadow:0 32px 64px rgba(0,0,0,0.4)"><div style="text-align:center;margin-bottom:32px"><div style="font-size:40px;margin-bottom:8px">🏠</div><h1 style="font-family:\'Playfair Display\',serif;color:#fff;font-size:26px;margin:0 0 4px">Akquise CRM</h1><p style="color:rgba(255,255,255,0.5);font-size:13px">Engel &amp; Völkers · Offenbach</p></div><div style="display:flex;flex-direction:column;gap:12px"><input id="login-user" placeholder="Benutzername" value="'+esc(S.loginUser)+'" style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:#fff;font-size:14px;outline:none"><input id="login-pass" type="password" placeholder="Passwort" value="'+esc(S.loginPass)+'" style="padding:12px 16px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:#fff;font-size:14px;outline:none">'+(S.loginErr?'<p style="color:#F87171;font-size:12px;text-align:center">'+esc(S.loginErr)+'</p>':'')+'<button data-action="login" style="padding:13px;border-radius:10px;background:linear-gradient(135deg,#6B7FD4,#A855F7);border:none;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Anmelden</button></div></div></div>';
 }
@@ -1048,6 +1131,7 @@ function renderMain(){
     '<div style="flex:1"></div>'+
     '<button id="sidebar-map-btn" data-action="toggle-map" title="Karte ein/aus" style="width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:17px;background:'+(S.map.visible?"rgba(255,255,255,0.15)":"transparent")+';color:#fff;margin-bottom:4px">🗺️</button>'+
     '<button data-action="export-csv" title="CSV Export" style="width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:15px;background:transparent;color:rgba(255,255,255,0.55);margin-bottom:3px">⬇</button>'+
+    '<button data-action="open-delete" title="Leads löschen" style="width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:15px;background:transparent;color:rgba(255,100,100,0.7);margin-bottom:3px">🗑</button>'+
     '<button data-action="logout" title="Abmelden" style="width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:15px;background:transparent;color:rgba(255,255,255,0.35);margin-bottom:7px">⏻</button>'+
   '</div>'+
   '<div style="flex:1;display:flex;flex-direction:column;overflow:hidden">'+
@@ -1073,6 +1157,7 @@ function renderMain(){
   '</div>'+
   renderImportModal()+
   renderAddModal()+
+  renderDeleteModal()+
   '</div>';
 }
 
@@ -1152,6 +1237,26 @@ function attachInputListeners(){
   // Import interval
   var ii=document.getElementById("import-interval-sel");
   if(ii)ii.addEventListener("change",function(e){S.importInterval=parseInt(e.target.value);});
+
+  // Delete modal checkboxes
+  var delAll=document.getElementById("del-all-cb");
+  if(delAll){
+    delAll.addEventListener("change",function(e){
+      var sel={};
+      if(e.target.checked)S.leads.forEach(function(l){sel[l.id]=true;});
+      S.deleteSelected=sel;render();
+    });
+  }
+  document.querySelectorAll("[data-del-id]").forEach(function(cb){
+    cb.addEventListener("change",function(e){
+      S.deleteSelected[cb.dataset.delId]=e.target.checked;
+      // Update "confirm-delete" button without full re-render
+      var selCount=Object.keys(S.deleteSelected).filter(function(k){return S.deleteSelected[k];}).length;
+      var btns=document.querySelectorAll('[data-action="confirm-delete"],[data-action="close-delete"]~[disabled]');
+      // Lightweight: just re-render the modal footer
+      render();
+    });
+  });
 
   // Manual column mapping dropdowns
   document.querySelectorAll("[data-mm]").forEach(function(el){
@@ -1258,7 +1363,7 @@ function doLogin(){
 document.addEventListener("click",function(e){
   // Close modal overlay
   if(e.target.classList&&e.target.classList.contains("modal-overlay")){
-    S.showImport=false;S.showAdd=false;render();return;
+    S.showImport=false;S.showAdd=false;S.showDelete=false;render();return;
   }
   var btn=e.target.closest("[data-action]");
   if(!btn)return;
@@ -1266,6 +1371,16 @@ document.addEventListener("click",function(e){
 
   if(action==="login"){doLogin();return;}
   if(action==="logout"){S.auth=false;render();return;}
+  if(action==="open-delete"){S.showDelete=true;S.deleteSelected={};render();return;}
+  if(action==="close-delete"){S.showDelete=false;S.deleteSelected={};render();return;}
+  if(action==="confirm-delete"){
+    var toDelete=Object.keys(S.deleteSelected).filter(function(k){return S.deleteSelected[k];});
+    if(toDelete.length===0)return;
+    if(!confirm(toDelete.length+' Lead'+(toDelete.length===1?'':'s')+' wirklich löschen?'))return;
+    S.leads=S.leads.filter(function(l){return!S.deleteSelected[l.id];});
+    saveLeads();S.showDelete=false;S.deleteSelected={};render();
+    return;
+  }
   if(action==="search-clear"){S.searchQuery="";render();return;}
   if(action==="search-pick"){
     var pickId=el.dataset.leadId||el.closest("[data-lead-id]")&&el.closest("[data-lead-id]").dataset.leadId;
