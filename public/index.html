@@ -47,7 +47,6 @@ var COLUMNS = [
   {id:"termin",label:"Termin vor Ort",color:"#5BA8A0"},
   {id:"nicht_erreicht",label:"Nicht erreicht",color:"#F59E0B"},
   {id:"wiedervorlage_tasks",label:"Wiedervorlage & Tasks",color:"#0EA5E9"},
-  {id:"besichtigung",label:"Besichtigung",color:"#4DAA6E"},
   {id:"praesentation",label:"Präsentationstermin",color:"#E8A838"},
   {id:"auftrag",label:"Auftrag",color:"#3AA86C"},
   {id:"vermarktung",label:"Vermarktungsstart",color:"#A855F7"},
@@ -555,8 +554,7 @@ function mapKategorieToColumn(raw){
     {id:'erstkontakt',  keys:['erstkontakt','erstkontak','firstcontact','kontakt','kontaktiert']},
     {id:'nicht_erreicht',keys:['nichterreicht','nicherreicht','unerreicht','noreply','noanswer','keinekontakt']},
     {id:'wiedervorlage_tasks',keys:['wiedervorlage','wiederlage','task','tasks','followup','follow','wiederv']},
-    {id:'termin',       keys:['termin','terminvorort','appointment','besichtigungstermin','vorort']},
-    {id:'besichtigung', keys:['besichtigung','besich','viewing','begehung']},
+    {id:'termin',       keys:['termin','terminvorort','appointment','besichtigungstermin','vorort','besichtigung','besich','viewing','begehung']},
     {id:'praesentation',keys:['praesentation','präsentation','presentation','praesentationstermin','präsentationstermin']},
     {id:'auftrag',      keys:['auftrag','auftraggeber','mandate','mandat','listed']},
     {id:'vermarktung',  keys:['vermarktung','vermarktungsstart','marketing','vermarkt']},
@@ -990,7 +988,7 @@ function renderTopBand(){
   var aufgaben=getAufgaben().length;
   var overdueCount=getOverdueItems().length;
   var totalActive=S.leads.filter(function(l){return l.columnId!=="archiv"&&l.columnId!=="verworfen";}).length;
-  var inTermin=S.leads.filter(function(l){return["termin","besichtigung","praesentation","auftrag","vermarktung"].indexOf(l.columnId)>=0;}).length;
+  var inTermin=S.leads.filter(function(l){return["termin","praesentation","auftrag","vermarktung"].indexOf(l.columnId)>=0;}).length;
   var terminquote=totalActive>0?Math.round((inTermin/totalActive)*100):0;
   var alert=aufgaben>0;
   function item(icon,label,value,color,bg,id,active,hasAlert){
@@ -1108,17 +1106,23 @@ function renderColDrop(col, colLeads){
 function renderKanban(){
   var filtered=getFilteredLeads();
   var oCols=orderedColumns();
-  var cols=oCols.map(function(col){
+  // "archiv" and "verworfen" are rendered stacked in one slot; all others are single slots
+  var STACK_IDS=['archiv','verworfen'];
+  var singleCols=oCols.filter(function(c){return STACK_IDS.indexOf(c.id)<0;});
+  var stackedCols=oCols.filter(function(c){return STACK_IDS.indexOf(c.id)>=0;});
+  // total visual slots = single columns + (1 if any stacked)
+  var totalSlots=singleCols.length+(stackedCols.length>0?1:0);
+
+  function renderColInner(col,isHalf){
     var colLeads=filtered.filter(function(l){return l.columnId===col.id;}).sort(function(a,b){return(b.score||0)-(a.score||0);});
     var isOver=S.dragOverCol===col.id&&!S.draggingColId;
     var isDropOpen=S.colDropOpen===col.id;
     var isDraggingThis=S.draggingColId===col.id;
-    // drag handle shown when unlocked
     var dragHandle=S.colLocked?'':'<span data-drag-col-id="'+col.id+'" title="Spalte verschieben" style="cursor:grab;font-size:13px;color:'+col.color+';opacity:0.7;flex-shrink:0;line-height:1;user-select:none" draggable="false">⠿</span>';
     var header='<div style="position:relative;padding:9px 11px 7px;border-bottom:2px solid '+col.color+'40;flex-shrink:0">'+
       '<div style="display:flex;align-items:center;gap:4px">'+
         dragHandle+
-        '<span style="font-size:10px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(col.label)+'</span>'+
+        '<span style="font-size:'+(isHalf?'9':'10')+'px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(col.label)+'</span>'+
         '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">'+
           (colLeads.length?'<button data-action="toggle-col-drop" data-col-id="'+col.id+'" title="Lead direkt auswählen" style="width:20px;height:20px;border-radius:5px;border:none;background:'+(isDropOpen?col.color:'rgba(0,0,0,0.06)')+';color:'+(isDropOpen?'#fff':col.color)+';cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center">☰</button>':'')+
           '<span style="font-size:10px;font-weight:700;background:'+col.color+';color:#fff;border-radius:20px;padding:1px 6px">'+colLeads.length+'</span>'+
@@ -1126,9 +1130,20 @@ function renderKanban(){
       '</div>'+
       renderColDrop(col,colLeads)+
     '</div>';
-    return'<div data-col-id="'+col.id+'" draggable="'+(S.colLocked?'false':'true')+'" style="width:210px;flex-shrink:0;display:flex;flex-direction:column;background:'+(isOver?col.color+"15":"rgba(0,0,0,0.04)")+';border-radius:13px;border:'+(isOver?"2px dashed "+col.color:(isDraggingThis?"2px dashed "+col.color+"88":"2px solid transparent"))+';transition:all 0.15s;overflow:visible;opacity:'+(isDraggingThis?'0.45':'1')+'">'+header+'<div style="flex:1;overflow-y:auto;padding:7px">'+colLeads.map(function(lead){return renderLeadCard(lead,col);}).join("")+'</div></div>';
+    return'<div data-col-id="'+col.id+'" draggable="'+(S.colLocked?'false':'true')+'" style="'+(isHalf?'flex:1;min-height:0;':'height:100%;')+'display:flex;flex-direction:column;background:'+(isOver?col.color+"15":"rgba(0,0,0,0.04)")+';border-radius:13px;border:'+(isOver?"2px dashed "+col.color:(isDraggingThis?"2px dashed "+col.color+"88":"2px solid transparent"))+';transition:all 0.15s;overflow:visible;opacity:'+(isDraggingThis?'0.45':'1')+'">'+header+'<div style="flex:1;overflow-y:auto;padding:7px">'+colLeads.map(function(lead){return renderLeadCard(lead,col);}).join("")+'</div></div>';
+  }
+
+  var slotHtml=singleCols.map(function(col){
+    return'<div style="flex:1;min-width:130px;height:100%">'+renderColInner(col,false)+'</div>';
   }).join("");
-  return'<div style="flex:1;overflow-x:auto;overflow-y:hidden;padding:8px 10px 10px"><div style="display:flex;gap:9px;height:100%;min-width:'+(oCols.length*219)+'px">'+cols+'</div></div>';
+
+  if(stackedCols.length>0){
+    slotHtml+='<div style="flex:1;min-width:130px;height:100%;display:flex;flex-direction:column;gap:9px">'+
+      stackedCols.map(function(col){return renderColInner(col,true);}).join("")+
+    '</div>';
+  }
+
+  return'<div style="flex:1;overflow-x:auto;overflow-y:hidden;padding:8px 10px 10px"><div style="display:flex;gap:9px;height:100%;min-width:'+(totalSlots*130)+'px">'+slotHtml+'</div></div>';
 }
 
 // ===================== RENDER STATS =====================
