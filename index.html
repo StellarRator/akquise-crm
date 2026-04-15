@@ -50,18 +50,18 @@ var sb = (window.supabase && window.supabase.createClient) ? window.supabase.cre
 
 function sbSave(lead){
   if(!sb||!lead||!lead.id)return;
-  sb.from('leads').upsert({id:lead.id,data:lead,updated_at:new Date().toISOString(),updated_by:'team'})
+  sb.from('leads').upsert({id:String(lead.id),data:lead,updated_at:new Date().toISOString(),updated_by:'team'})
     .then(function(r){if(r.error)console.warn('[Supabase] upsert error:',r.error.message);});
 }
 function sbSaveMany(leads){
   if(!sb||!leads||!leads.length)return;
-  var rows=leads.map(function(l){return{id:l.id,data:l,updated_at:new Date().toISOString(),updated_by:'team'};});
+  var rows=leads.map(function(l){return{id:String(l.id),data:l,updated_at:new Date().toISOString(),updated_by:'team'};});
   sb.from('leads').upsert(rows)
     .then(function(r){if(r.error)console.warn('[Supabase] batch upsert error:',r.error.message);});
 }
 function sbDel(id){
   if(!sb)return;
-  sb.from('leads').delete().eq('id',id)
+  sb.from('leads').delete().eq('id',String(id))
     .then(function(r){if(r.error)console.warn('[Supabase] delete error:',r.error.message);});
 }
 var _sbChannel=null;
