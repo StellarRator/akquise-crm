@@ -6,6 +6,7 @@
   <title>Akquise CRM – Engel &amp; Völkers Offenbach</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'DM Sans',sans-serif;background:#F4F1EC;overflow:hidden}
@@ -41,6 +42,59 @@
 <script>
 // ===================== CONSTANTS =====================
 var MAPS_API_KEY = "AIzaSyATGXcnzTCFglUmI_h6IifAq3Z3LTnk6JU";
+
+// ===================== SUPABASE SYNC =====================
+var SUPABASE_URL = 'https://lmippbhbwykecqkkabni.supabase.co';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxtaXBwYmhid3lrZWNxa2thYm5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyNDQ2NjMsImV4cCI6MjA5MTgyMDY2M30.1z0BvF3aSWJVzzz6HUFdVkOtWOX0YTHN0jNWsR5rNcQ';
+var sb = (window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+function sbSave(lead){
+  if(!sb||!lead||!lead.id)return;
+  sb.from('leads').upsert({id:lead.id,data:lead,updated_at:new Date().toISOString(),updated_by:'team'})
+    .then(function(r){if(r.error)console.warn('[Supabase] upsert error:',r.error.message);});
+}
+function sbSaveMany(leads){
+  if(!sb||!leads||!leads.length)return;
+  var rows=leads.map(function(l){return{id:l.id,data:l,updated_at:new Date().toISOString(),updated_by:'team'};});
+  sb.from('leads').upsert(rows)
+    .then(function(r){if(r.error)console.warn('[Supabase] batch upsert error:',r.error.message);});
+}
+function sbDel(id){
+  if(!sb)return;
+  sb.from('leads').delete().eq('id',id)
+    .then(function(r){if(r.error)console.warn('[Supabase] delete error:',r.error.message);});
+}
+var _sbChannel=null;
+function sbStartRealtime(){
+  if(!sb)return;
+  if(_sbChannel){try{_sbChannel.unsubscribe();}catch(e){}_sbChannel=null;}
+  _sbChannel=sb.channel('leads-sync')
+    .on('postgres_changes',{event:'*',schema:'public',table:'leads'},function(payload){
+      if(payload.eventType==='DELETE'){
+        var delId=payload.old&&payload.old.id;
+        if(delId&&S.leads.find(function(l){return String(l.id)===String(delId);})){
+          S.leads=S.leads.filter(function(l){return String(l.id)!==String(delId);});
+          saveLeads();render();
+        }
+      }else{
+        var incoming=payload.new&&payload.new.data;
+        if(!incoming||!incoming.id)return;
+        var idx=S.leads.findIndex(function(l){return String(l.id)===String(incoming.id);});
+        if(idx>=0){
+          if(JSON.stringify(S.leads[idx])!==JSON.stringify(incoming)){
+            S.leads[idx]=incoming;
+            if(S.editingLead&&String(S.editingLead.id)===String(incoming.id))S.editingLead=incoming;
+            saveLeads();render();
+          }
+        }else{
+          S.leads.push(incoming);
+          saveLeads();render();
+        }
+      }
+    })
+    .subscribe(function(status){console.log('[Supabase] Realtime:',status);});
+}
+
 var COLUMNS = [
   {id:"lead",label:"Lead eingegangen",color:"#6B7FD4"},
   {id:"erstkontakt",label:"Erstkontakt",color:"#7B9ED9"},
@@ -199,7 +253,7 @@ function getFilteredLeads(){
 function addLead(){
   var lead=Object.assign({},S.newLead,{id:Date.now(),erstelltAm:todayDE(),aktivitaeten:[]});
   S.leads.push(lead);
-  saveLeads();S.showAdd=false;S.newLead=createLead();render();
+  saveLeads();sbSave(lead);S.showAdd=false;S.newLead=createLead();render();
 }
 function updateLead(id,upds){
   S.leads=S.leads.map(function(l){
@@ -217,9 +271,10 @@ function updateLead(id,upds){
     return u;
   });
   if(S.editingLead&&S.editingLead.id==id)S.editingLead=S.leads.find(function(l){return l.id==id;})||S.editingLead;
-  saveLeads();
+  saveLeads();var _u=S.leads.find(function(l){return l.id==id;});if(_u)sbSave(_u);
 }
 function deleteLead(id){
+  sbDel(id);
   S.leads=S.leads.filter(function(l){return l.id!=id;});
   S.expandedCard=null;S.editingLead=null;
   saveLeads();render();
@@ -231,13 +286,13 @@ function addActivity(lid){
   S.leads=S.leads.map(function(l){return l.id==lid?Object.assign({},l,{aktivitaeten:(l.aktivitaeten||[]).concat([e])}):l;});
   if(S.editingLead&&S.editingLead.id==lid)S.editingLead=Object.assign({},S.editingLead,{aktivitaeten:(S.editingLead.aktivitaeten||[]).concat([e])});
   S.newActivity[lid]="";
-  saveLeads();render();
+  saveLeads();var _al=S.leads.find(function(l){return l.id==lid;});if(_al)sbSave(_al);render();
 }
 function logCall(lid){
   var e={text:"📞 Anruf gestartet ("+new Date().toLocaleTimeString("de-DE")+")",time:new Date().toLocaleString("de-DE")};
   S.leads=S.leads.map(function(l){return l.id==lid?Object.assign({},l,{aktivitaeten:(l.aktivitaeten||[]).concat([e])}):l;});
   if(S.editingLead&&S.editingLead.id==lid)S.editingLead=Object.assign({},S.editingLead,{aktivitaeten:(S.editingLead.aktivitaeten||[]).concat([e])});
-  saveLeads();
+  saveLeads();var _cl=S.leads.find(function(l){return l.id==lid;});if(_cl)sbSave(_cl);
 }
 
 // ===================== CSV =====================
@@ -669,7 +724,7 @@ function handleImport(){
   var toImport=S.importFetched.slice();
   S.importDupes.forEach(function(d){if(S.importDupeDecisions[d.inseratNr||d.strasse]==="import")toImport.push(d);});
   S.leads=S.leads.concat(toImport);
-  saveLeads();localStorage.setItem("import_interval",String(S.importInterval));
+  saveLeads();sbSaveMany(toImport);localStorage.setItem("import_interval",String(S.importInterval));
   if(S.autoImportTimer)clearInterval(S.autoImportTimer);
   if(S.importInterval>0){
     var sheetId=extractSheetId(S.importSheetInput||DEFAULT_SHEET_ID);
@@ -1684,9 +1739,24 @@ function attachInputListeners(){
 
 // ===================== GLOBAL CLICK HANDLER (set up once) =====================
 function doLogin(){
-  if(S.loginUser==="admin"&&S.loginPass==="akquise2025"){S.auth=true;S.loginErr="";}
-  else S.loginErr="Ungültige Anmeldedaten.";
-  render();
+  if(S.loginUser==="admin"&&S.loginPass==="akquise2025"){
+    S.auth=true;S.loginErr="";render();
+    if(sb){
+      sb.from('leads').select('data').then(function(r){
+        if(r.error){console.warn('[Supabase] load error:',r.error.message);}
+        else if(r.data&&r.data.length){
+          S.leads=r.data.map(function(row){return row.data;});
+          saveLeads();render();
+        } else if(S.leads.length>0){
+          // Supabase leer, localStorage hat Daten → einmalige Auto-Migration
+          console.log('[Supabase] Auto-Migration:',S.leads.length,'Leads werden übertragen…');
+          sbSaveMany(S.leads);
+          console.log('[Supabase] Auto-Migration abgeschlossen.');
+        }
+        sbStartRealtime();
+      }).catch(function(e){console.warn('[Supabase] load failed:',e);sbStartRealtime();});
+    }
+  }else{S.loginErr="Ungültige Anmeldedaten.";render();}
 }
 
 document.addEventListener("click",function(e){

@@ -6,6 +6,7 @@
   <title>Akquise CRM – Engel &amp; Völkers Offenbach</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&display=swap"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'DM Sans',sans-serif;background:#F4F1EC;overflow:hidden}
@@ -41,13 +42,65 @@
 <script>
 // ===================== CONSTANTS =====================
 var MAPS_API_KEY = "AIzaSyATGXcnzTCFglUmI_h6IifAq3Z3LTnk6JU";
+
+// ===================== SUPABASE SYNC =====================
+var SUPABASE_URL = 'https://lmippbhbwykecqkkabni.supabase.co';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxtaXBwYmhid3lrZWNxa2thYm5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyNDQ2NjMsImV4cCI6MjA5MTgyMDY2M30.1z0BvF3aSWJVzzz6HUFdVkOtWOX0YTHN0jNWsR5rNcQ';
+var sb = (window.supabase && window.supabase.createClient) ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+function sbSave(lead){
+  if(!sb||!lead||!lead.id)return;
+  sb.from('leads').upsert({id:lead.id,data:lead,updated_at:new Date().toISOString(),updated_by:'team'})
+    .then(function(r){if(r.error)console.warn('[Supabase] upsert error:',r.error.message);});
+}
+function sbSaveMany(leads){
+  if(!sb||!leads||!leads.length)return;
+  var rows=leads.map(function(l){return{id:l.id,data:l,updated_at:new Date().toISOString(),updated_by:'team'};});
+  sb.from('leads').upsert(rows)
+    .then(function(r){if(r.error)console.warn('[Supabase] batch upsert error:',r.error.message);});
+}
+function sbDel(id){
+  if(!sb)return;
+  sb.from('leads').delete().eq('id',id)
+    .then(function(r){if(r.error)console.warn('[Supabase] delete error:',r.error.message);});
+}
+var _sbChannel=null;
+function sbStartRealtime(){
+  if(!sb)return;
+  if(_sbChannel){try{_sbChannel.unsubscribe();}catch(e){}_sbChannel=null;}
+  _sbChannel=sb.channel('leads-sync')
+    .on('postgres_changes',{event:'*',schema:'public',table:'leads'},function(payload){
+      if(payload.eventType==='DELETE'){
+        var delId=payload.old&&payload.old.id;
+        if(delId&&S.leads.find(function(l){return String(l.id)===String(delId);})){
+          S.leads=S.leads.filter(function(l){return String(l.id)!==String(delId);});
+          saveLeads();render();
+        }
+      }else{
+        var incoming=payload.new&&payload.new.data;
+        if(!incoming||!incoming.id)return;
+        var idx=S.leads.findIndex(function(l){return String(l.id)===String(incoming.id);});
+        if(idx>=0){
+          if(JSON.stringify(S.leads[idx])!==JSON.stringify(incoming)){
+            S.leads[idx]=incoming;
+            if(S.editingLead&&String(S.editingLead.id)===String(incoming.id))S.editingLead=incoming;
+            saveLeads();render();
+          }
+        }else{
+          S.leads.push(incoming);
+          saveLeads();render();
+        }
+      }
+    })
+    .subscribe(function(status){console.log('[Supabase] Realtime:',status);});
+}
+
 var COLUMNS = [
   {id:"lead",label:"Lead eingegangen",color:"#6B7FD4"},
   {id:"erstkontakt",label:"Erstkontakt",color:"#7B9ED9"},
   {id:"termin",label:"Termin vor Ort",color:"#5BA8A0"},
   {id:"nicht_erreicht",label:"Nicht erreicht",color:"#F59E0B"},
   {id:"wiedervorlage_tasks",label:"Wiedervorlage & Tasks",color:"#0EA5E9"},
-  {id:"besichtigung",label:"Besichtigung",color:"#4DAA6E"},
   {id:"praesentation",label:"Präsentationstermin",color:"#E8A838"},
   {id:"auftrag",label:"Auftrag",color:"#3AA86C"},
   {id:"vermarktung",label:"Vermarktungsstart",color:"#A855F7"},
@@ -200,7 +253,7 @@ function getFilteredLeads(){
 function addLead(){
   var lead=Object.assign({},S.newLead,{id:Date.now(),erstelltAm:todayDE(),aktivitaeten:[]});
   S.leads.push(lead);
-  saveLeads();S.showAdd=false;S.newLead=createLead();render();
+  saveLeads();sbSave(lead);S.showAdd=false;S.newLead=createLead();render();
 }
 function updateLead(id,upds){
   S.leads=S.leads.map(function(l){
@@ -218,9 +271,10 @@ function updateLead(id,upds){
     return u;
   });
   if(S.editingLead&&S.editingLead.id==id)S.editingLead=S.leads.find(function(l){return l.id==id;})||S.editingLead;
-  saveLeads();
+  saveLeads();var _u=S.leads.find(function(l){return l.id==id;});if(_u)sbSave(_u);
 }
 function deleteLead(id){
+  sbDel(id);
   S.leads=S.leads.filter(function(l){return l.id!=id;});
   S.expandedCard=null;S.editingLead=null;
   saveLeads();render();
@@ -232,13 +286,13 @@ function addActivity(lid){
   S.leads=S.leads.map(function(l){return l.id==lid?Object.assign({},l,{aktivitaeten:(l.aktivitaeten||[]).concat([e])}):l;});
   if(S.editingLead&&S.editingLead.id==lid)S.editingLead=Object.assign({},S.editingLead,{aktivitaeten:(S.editingLead.aktivitaeten||[]).concat([e])});
   S.newActivity[lid]="";
-  saveLeads();render();
+  saveLeads();var _al=S.leads.find(function(l){return l.id==lid;});if(_al)sbSave(_al);render();
 }
 function logCall(lid){
   var e={text:"📞 Anruf gestartet ("+new Date().toLocaleTimeString("de-DE")+")",time:new Date().toLocaleString("de-DE")};
   S.leads=S.leads.map(function(l){return l.id==lid?Object.assign({},l,{aktivitaeten:(l.aktivitaeten||[]).concat([e])}):l;});
   if(S.editingLead&&S.editingLead.id==lid)S.editingLead=Object.assign({},S.editingLead,{aktivitaeten:(S.editingLead.aktivitaeten||[]).concat([e])});
-  saveLeads();
+  saveLeads();var _cl=S.leads.find(function(l){return l.id==lid;});if(_cl)sbSave(_cl);
 }
 
 // ===================== CSV =====================
@@ -541,8 +595,35 @@ function buildInitialManualMap(data){
     mail:       fi('e-mail','email','mail','@'),
     fon:        fi('telefon','mobil','fon','tel.','tel ','phone','handy'),
     notizen:    fi('notiz','gespr\u00e4ch','kommentar','bemerkung','anmerkung','memo','hinweis'),
-    status:     fi('status','verf\u00fcgbarkeit','aktiv','online/offline')
+    status:     fi('status','verf\u00fcgbarkeit','aktiv','online/offline'),
+    kategorie:  fi('kategorie','category','kanban','pipeline','stufe','phase','stage','spalte','column')
   };
+}
+
+// Map a raw "Kategorie" cell value to a COLUMNS id (case-insensitive, fuzzy)
+function mapKategorieToColumn(raw){
+  if(!raw)return null;
+  var r=raw.toLowerCase().replace(/[\s_\-]/g,'');
+  var pairs=[
+    {id:'lead',         keys:['lead','leadeingegangen','neu','new','eingang']},
+    {id:'erstkontakt',  keys:['erstkontakt','erstkontak','firstcontact','kontakt','kontaktiert']},
+    {id:'nicht_erreicht',keys:['nichterreicht','nicherreicht','unerreicht','noreply','noanswer','keinekontakt']},
+    {id:'wiedervorlage_tasks',keys:['wiedervorlage','wiederlage','task','tasks','followup','follow','wiederv']},
+    {id:'termin',       keys:['termin','terminvorort','appointment','besichtigungstermin','vorort','besichtigung','besich','viewing','begehung']},
+    {id:'praesentation',keys:['praesentation','präsentation','presentation','praesentationstermin','präsentationstermin']},
+    {id:'auftrag',      keys:['auftrag','auftraggeber','mandate','mandat','listed']},
+    {id:'vermarktung',  keys:['vermarktung','vermarktungsstart','marketing','vermarkt']},
+    {id:'verworfen',    keys:['verworfen','offline','inaktiv','rejected','abgelehnt','veraltet']},
+    {id:'archiv',       keys:['archiv','verloren','archiviert','lost','closed','abgeschlossen']}
+  ];
+  for(var i=0;i<pairs.length;i++){
+    var p=pairs[i];
+    for(var k=0;k<p.keys.length;k++){
+      var kw=p.keys[k];
+      if(r===kw||r.indexOf(kw)>=0||kw.indexOf(r)>=0)return p.id;
+    }
+  }
+  return null;
 }
 
 // Map leads using explicit column-index assignments
@@ -572,7 +653,15 @@ function mapLeadsFromManualMap(data, mm){
     if(zimmer)extra.push('Zimmer: '+zimmer);
     var fullNotizen=[notizen].concat(extra).filter(Boolean).join(' | ');
     var statusRaw=g(row,mm.status).toLowerCase().trim();
-    var targetCol=(statusRaw==='offline'||statusRaw==='inaktiv'||statusRaw==='nicht verf\u00fcgbar')?'verworfen':'lead';
+    var kategorieRaw=g(row,mm.kategorie);
+    // Status "offline" always wins → verworfen; otherwise use Kategorie column; fallback: lead
+    var targetCol='lead';
+    if(statusRaw==='offline'||statusRaw==='inaktiv'||statusRaw==='nicht verf\u00fcgbar'){
+      targetCol='verworfen';
+    }else{
+      var kCol=mapKategorieToColumn(kategorieRaw);
+      if(kCol)targetCol=kCol;
+    }
     var lead={id:Date.now()+Math.random()+i,columnId:targetCol,
       strasse:strasse,hausnummer:g(row,mm.hausnummer),plz:g(row,mm.plz),ort:ort,
       objekttyp:mapObjekttyp(rawTyp)||'Eigentumswohnung',
@@ -635,7 +724,7 @@ function handleImport(){
   var toImport=S.importFetched.slice();
   S.importDupes.forEach(function(d){if(S.importDupeDecisions[d.inseratNr||d.strasse]==="import")toImport.push(d);});
   S.leads=S.leads.concat(toImport);
-  saveLeads();localStorage.setItem("import_interval",String(S.importInterval));
+  saveLeads();sbSaveMany(toImport);localStorage.setItem("import_interval",String(S.importInterval));
   if(S.autoImportTimer)clearInterval(S.autoImportTimer);
   if(S.importInterval>0){
     var sheetId=extractSheetId(S.importSheetInput||DEFAULT_SHEET_ID);
@@ -954,7 +1043,7 @@ function renderTopBand(){
   var aufgaben=getAufgaben().length;
   var overdueCount=getOverdueItems().length;
   var totalActive=S.leads.filter(function(l){return l.columnId!=="archiv"&&l.columnId!=="verworfen";}).length;
-  var inTermin=S.leads.filter(function(l){return["termin","besichtigung","praesentation","auftrag","vermarktung"].indexOf(l.columnId)>=0;}).length;
+  var inTermin=S.leads.filter(function(l){return["termin","praesentation","auftrag","vermarktung"].indexOf(l.columnId)>=0;}).length;
   var terminquote=totalActive>0?Math.round((inTermin/totalActive)*100):0;
   var alert=aufgaben>0;
   function item(icon,label,value,color,bg,id,active,hasAlert){
@@ -1018,8 +1107,8 @@ function renderLeadCard(lead,col){
     '</div>'
   :'')+
   // Quick WV & Task picker (collapsed inline)
-  (S.wvPickerLeadId===lead.id?
-    '<div style="margin-top:6px;padding:9px;background:#EFF6FF;border-radius:8px;border:1px solid #BFDBFE" onclick="event.stopPropagation()">'+
+  (String(S.wvPickerLeadId)===String(lead.id)?
+    '<div style="margin-top:6px;padding:9px;background:#EFF6FF;border-radius:8px;border:1px solid #BFDBFE">'+
       '<p style="font-size:10px;font-weight:700;color:#0EA5E9;margin:0 0 5px">📅 Wiedervorlage setzen</p>'+
       '<input type="date" id="wv-date-inp-'+lead.id+'" value="'+esc(lead.wiedervorlage)+'" style="width:100%;padding:5px 8px;border-radius:7px;border:1px solid #BFDBFE;font-size:11px;margin-bottom:5px">'+
       '<div style="display:flex;gap:5px">'+
@@ -1029,8 +1118,8 @@ function renderLeadCard(lead,col){
       '</div>'+
     '</div>'
   :'')+
-  (S.taskPickerLeadId===lead.id?
-    '<div style="margin-top:6px;padding:9px;background:#F0FDF4;border-radius:8px;border:1px solid #86EFAC" onclick="event.stopPropagation()">'+
+  (String(S.taskPickerLeadId)===String(lead.id)?
+    '<div style="margin-top:6px;padding:9px;background:#F0FDF4;border-radius:8px;border:1px solid #86EFAC">'+
       '<p style="font-size:10px;font-weight:700;color:#15803D;margin:0 0 5px">📋 Task setzen</p>'+
       '<input type="text" id="task-text-inp-'+lead.id+'" value="'+esc(lead.task)+'" placeholder="Aufgabe beschreiben…" style="width:100%;padding:5px 8px;border-radius:7px;border:1px solid #86EFAC;font-size:11px;margin-bottom:5px;box-sizing:border-box">'+
       '<div style="display:flex;gap:6px;margin-bottom:5px;align-items:center">'+
@@ -1072,17 +1161,23 @@ function renderColDrop(col, colLeads){
 function renderKanban(){
   var filtered=getFilteredLeads();
   var oCols=orderedColumns();
-  var cols=oCols.map(function(col){
+  // "archiv" and "verworfen" are rendered stacked in one slot; all others are single slots
+  var STACK_IDS=['archiv','verworfen'];
+  var singleCols=oCols.filter(function(c){return STACK_IDS.indexOf(c.id)<0;});
+  var stackedCols=oCols.filter(function(c){return STACK_IDS.indexOf(c.id)>=0;});
+  // total visual slots = single columns + (1 if any stacked)
+  var totalSlots=singleCols.length+(stackedCols.length>0?1:0);
+
+  function renderColInner(col,isHalf){
     var colLeads=filtered.filter(function(l){return l.columnId===col.id;}).sort(function(a,b){return(b.score||0)-(a.score||0);});
     var isOver=S.dragOverCol===col.id&&!S.draggingColId;
     var isDropOpen=S.colDropOpen===col.id;
     var isDraggingThis=S.draggingColId===col.id;
-    // drag handle shown when unlocked
     var dragHandle=S.colLocked?'':'<span data-drag-col-id="'+col.id+'" title="Spalte verschieben" style="cursor:grab;font-size:13px;color:'+col.color+';opacity:0.7;flex-shrink:0;line-height:1;user-select:none" draggable="false">⠿</span>';
     var header='<div style="position:relative;padding:9px 11px 7px;border-bottom:2px solid '+col.color+'40;flex-shrink:0">'+
       '<div style="display:flex;align-items:center;gap:4px">'+
         dragHandle+
-        '<span style="font-size:10px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(col.label)+'</span>'+
+        '<span style="font-size:'+(isHalf?'9':'10')+'px;font-weight:700;color:'+col.color+';text-transform:uppercase;letter-spacing:0.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(col.label)+'</span>'+
         '<div style="display:flex;gap:4px;align-items:center;flex-shrink:0">'+
           (colLeads.length?'<button data-action="toggle-col-drop" data-col-id="'+col.id+'" title="Lead direkt auswählen" style="width:20px;height:20px;border-radius:5px;border:none;background:'+(isDropOpen?col.color:'rgba(0,0,0,0.06)')+';color:'+(isDropOpen?'#fff':col.color)+';cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center">☰</button>':'')+
           '<span style="font-size:10px;font-weight:700;background:'+col.color+';color:#fff;border-radius:20px;padding:1px 6px">'+colLeads.length+'</span>'+
@@ -1090,9 +1185,20 @@ function renderKanban(){
       '</div>'+
       renderColDrop(col,colLeads)+
     '</div>';
-    return'<div data-col-id="'+col.id+'" draggable="'+(S.colLocked?'false':'true')+'" style="width:210px;flex-shrink:0;display:flex;flex-direction:column;background:'+(isOver?col.color+"15":"rgba(0,0,0,0.04)")+';border-radius:13px;border:'+(isOver?"2px dashed "+col.color:(isDraggingThis?"2px dashed "+col.color+"88":"2px solid transparent"))+';transition:all 0.15s;overflow:visible;opacity:'+(isDraggingThis?'0.45':'1')+'">'+header+'<div style="flex:1;overflow-y:auto;padding:7px">'+colLeads.map(function(lead){return renderLeadCard(lead,col);}).join("")+'</div></div>';
+    return'<div data-col-id="'+col.id+'" draggable="'+(S.colLocked?'false':'true')+'" style="'+(isHalf?'flex:1;min-height:0;':'height:100%;')+'display:flex;flex-direction:column;background:'+(isOver?col.color+"15":"rgba(0,0,0,0.04)")+';border-radius:13px;border:'+(isOver?"2px dashed "+col.color:(isDraggingThis?"2px dashed "+col.color+"88":"2px solid transparent"))+';transition:all 0.15s;overflow:visible;opacity:'+(isDraggingThis?'0.45':'1')+'">'+header+'<div style="flex:1;overflow-y:auto;padding:7px">'+colLeads.map(function(lead){return renderLeadCard(lead,col);}).join("")+'</div></div>';
+  }
+
+  var slotHtml=singleCols.map(function(col){
+    return'<div style="flex:1;min-width:130px;height:100%">'+renderColInner(col,false)+'</div>';
   }).join("");
-  return'<div style="flex:1;overflow-x:auto;overflow-y:hidden;padding:8px 10px 10px"><div style="display:flex;gap:9px;height:100%;min-width:'+(oCols.length*219)+'px">'+cols+'</div></div>';
+
+  if(stackedCols.length>0){
+    slotHtml+='<div style="flex:1;min-width:130px;height:100%;display:flex;flex-direction:column;gap:9px">'+
+      stackedCols.map(function(col){return renderColInner(col,true);}).join("")+
+    '</div>';
+  }
+
+  return'<div style="flex:1;overflow-x:auto;overflow-y:hidden;padding:8px 10px 10px"><div style="display:flex;gap:9px;height:100%;min-width:'+(totalSlots*130)+'px">'+slotHtml+'</div></div>';
 }
 
 // ===================== RENDER STATS =====================
@@ -1228,6 +1334,7 @@ function renderImportModal(){
         colDrop('fon','Telefon',false)+
         colDrop('notizen','Notizen / Kommentar',false)+
         colDrop('status','Status (online/offline → Spalte)',false)+
+        colDrop('kategorie','Kategorie (→ Kanban-Spalte beim Import)',false)+
       '</tbody>'+
     '</table></div>'+
     '<div style="display:flex;gap:10px;justify-content:flex-end">'+
@@ -1378,6 +1485,9 @@ function renderMain(){
 function render(){
   var app=document.getElementById("app");
   if(!app)return;
+  // Save focused input (so typing in search/filter keeps cursor after re-render)
+  var prevFocusId=document.activeElement?document.activeElement.id:null;
+  var prevFocusPos=(document.activeElement&&document.activeElement.selectionStart!=null)?document.activeElement.selectionStart:-1;
   // Save scroll positions
   var scrolls={};
   document.querySelectorAll("[data-col-id]").forEach(function(el){
@@ -1392,6 +1502,14 @@ function render(){
   });
   if(S.auth)syncMapWindow();
   attachInputListeners();
+  // Restore focus to any text input that was active before re-render
+  if(prevFocusId){
+    var prevEl=document.getElementById(prevFocusId);
+    if(prevEl&&(prevEl.tagName==='INPUT'||prevEl.tagName==='TEXTAREA')){
+      prevEl.focus();
+      if(prevFocusPos>=0)try{prevEl.setSelectionRange(prevFocusPos,prevFocusPos);}catch(x){}
+    }
+  }
   // Auto-show overdue warning once per session
   if(!window._overdueShown&&getOverdueItems().length>0&&S.auth){
     window._overdueShown=true;S.showOverdueWarning=true;
@@ -1418,7 +1536,7 @@ function attachInputListeners(){
 
   // Filter inputs
   var fs=document.getElementById("filter-search");
-  if(fs){fs.addEventListener("input",function(e){S.filters.search=e.target.value;render();});}
+  if(fs){fs.addEventListener("input",function(e){S.filters.search=e.target.value;render();/* render() restores focus */});}
   var fq=document.getElementById("filter-quelle");
   if(fq)fq.addEventListener("change",function(e){S.filters.quelle=e.target.value;render();});
   var ft=document.getElementById("filter-typ");
@@ -1429,17 +1547,18 @@ function attachInputListeners(){
   if(gs){
     gs.addEventListener("input",function(e){
       S.searchQuery=e.target.value;
-      var pos=e.target.selectionStart;
-      render();
-      var ng=document.getElementById("global-search");
-      if(ng){ng.focus();try{ng.setSelectionRange(pos,pos);}catch(x){}}
+      render(); // render() now saves+restores focus automatically
     });
     gs.addEventListener("keydown",function(e){
       if(e.key==="Escape"){S.searchQuery="";render();}
     });
     gs.addEventListener("blur",function(){
-      // delay so click on result can fire first
-      setTimeout(function(){S.searchQuery="";render();},180);
+      // Small delay so click on a search result can fire before we clear
+      setTimeout(function(){
+        var ng=document.getElementById("global-search");
+        if(ng&&document.activeElement===ng)return; // still focused after re-render
+        if(S.searchQuery){S.searchQuery="";render();}
+      },200);
     });
   }
 
@@ -1565,7 +1684,11 @@ function attachInputListeners(){
   document.querySelectorAll("[data-col-id]").forEach(function(colEl){
     colEl.addEventListener("dragstart",function(e){
       if(S.colLocked)return;
-      if(e.target.dataset.leadId)return; // lead drag, not column drag
+      // Only start column drag if user is NOT dragging a lead card
+      if(e.target.closest&&e.target.closest('.lead-card'))return;
+      if(!e.target.closest&&e.target.classList&&e.target.classList.contains('lead-card'))return;
+      // Ensure colOrder is fully populated (handles newly added columns)
+      S.colOrder=orderedColumns().map(function(c){return c.id;});
       S.draggingColId=colEl.dataset.colId;
       S.dragId=null;
       e.dataTransfer.effectAllowed="move";
@@ -1616,9 +1739,24 @@ function attachInputListeners(){
 
 // ===================== GLOBAL CLICK HANDLER (set up once) =====================
 function doLogin(){
-  if(S.loginUser==="admin"&&S.loginPass==="akquise2025"){S.auth=true;S.loginErr="";}
-  else S.loginErr="Ungültige Anmeldedaten.";
-  render();
+  if(S.loginUser==="admin"&&S.loginPass==="akquise2025"){
+    S.auth=true;S.loginErr="";render();
+    if(sb){
+      sb.from('leads').select('data').then(function(r){
+        if(r.error){console.warn('[Supabase] load error:',r.error.message);}
+        else if(r.data&&r.data.length){
+          S.leads=r.data.map(function(row){return row.data;});
+          saveLeads();render();
+        } else if(S.leads.length>0){
+          // Supabase leer, localStorage hat Daten → einmalige Auto-Migration
+          console.log('[Supabase] Auto-Migration:',S.leads.length,'Leads werden übertragen…');
+          sbSaveMany(S.leads);
+          console.log('[Supabase] Auto-Migration abgeschlossen.');
+        }
+        sbStartRealtime();
+      }).catch(function(e){console.warn('[Supabase] load failed:',e);sbStartRealtime();});
+    }
+  }else{S.loginErr="Ungültige Anmeldedaten.";render();}
 }
 
 document.addEventListener("click",function(e){
