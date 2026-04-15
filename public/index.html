@@ -154,8 +154,8 @@ function getDupeReason(existing,lead){
       return'Telefon '+lead.fon+' bereits vorhanden';
     if(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.hausnummer===lead.hausnummer&&l.plz===lead.plz)
       return'Adresse '+lead.strasse+' '+lead.hausnummer+' bereits vorhanden';
-    if(l.strasse&&lead.strasse&&l.strasse.toLowerCase()===lead.strasse.toLowerCase()&&l.ort===lead.ort&&l.objekttyp===lead.objekttyp&&l.preis===lead.preis&&lead.preis)
-      return'Gleiche Adresse+Typ+Preis in '+lead.ort;
+    if(l.ort&&lead.ort&&l.ort===lead.ort&&l.objekttyp===lead.objekttyp&&l.preis===lead.preis&&lead.preis)
+      return'Gleicher Ort+Typ+Preis: '+lead.objekttyp+' in '+lead.ort;
   }
   return null;
 }
